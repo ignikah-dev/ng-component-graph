@@ -1,0 +1,51 @@
+{
+  "name": "ng-component-graph",
+  "version": "0.1.0",
+  "description": "Draw the composition graph of standalone Angular components and flag ones that sit alone in the graph — from the @Component imports[] array, via the TypeScript AST.",
+  "type": "module",
+  "bin": {
+    "ng-component-graph": "./component-graph.mjs"
+  },
+  "main": "./component-graph.mjs",
+  "files": [
+    "component-graph.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "graph": "node component-graph.mjs"
+  },
+  "keywords": [
+    "angular",
+    "standalone",
+    "component",
+    "graph",
+    "dependency-graph",
+    "mermaid",
+    "graphviz",
+    "dead-code",
+    "orphan",
+    "ast"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "typescript": ">=4.5"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": false
+    }
+  },
+  "license": "MIT",
+  "author": "Ignikah <hello@ignikah.dev>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ignikah-dev/ng-component-graph.git"
+  },
+  "homepage": "https://github.com/ignikah-dev/ng-component-graph#readme",
+  "bugs": {
+    "url": "https://github.com/ignikah-dev/ng-component-graph/issues"
+  }
+}

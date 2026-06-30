@@ -1,0 +1,10 @@
+node_modules/
+*.log
+
+# generated graph artifacts
+*.svg
+*.png
+*.dot
+graph-*.md
+!docs/**/*.svg
+!docs/**/*.png
