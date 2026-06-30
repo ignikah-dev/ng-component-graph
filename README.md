@@ -1,24 +1,30 @@
 # ng-component-graph
 
-Draw the **"who composes whom"** relationship between **standalone Angular components** in an app, and flag components that sit alone in the composition graph.
+Draw the **full hierarchy** of a standalone Angular app:
 
-It reads each `@Component`'s standalone `imports: [...]` array via the **TypeScript AST**. For standalone components that array is the authoritative list of which other components a template may use — so the graph is more accurate than scanning ES imports (e.g. with [madge](https://github.com/pahen/madge)), which also picks up services, pipes, and type-only imports that never appear in a template.
+```
+app (bootstrap)  →  route (URL path)  →  page component  →  child component  →  child…
+```
 
-- 🟢 Zero runtime deps beyond your project's `typescript`
-- 🧠 AST-based, not regex-based, edge detection
-- 🖼 Output as **Mermaid**, **JSON**, or a colour-coded **graphviz** SVG/PNG
-- 🔎 Distinguishes "isolated in the graph" from "actually dead" — **isolated ≠ orphan**
+It reconstructs the real URL path tree from your `*.routes.ts` files and then expands each
+page into the child components it composes — all parsed with the **TypeScript AST**, so the
+edges match what your routes and templates actually wire up.
 
-![Example component composition graph](https://raw.githubusercontent.com/ignikah-dev/ng-component-graph/main/docs/example-graph.png)
+- 🧭 Reconstructs the **route tree**: inline `children`, lazy `loadChildren`, `loadComponent`, `component:`, `redirectTo`, and `data.title`
+- 🧩 Expands each page via its standalone `@Component({ imports: [...] })` into child components — **AST-based, not regex**
+- 🟦 Flags **layout shell** routes, 🟧 **dual-role** "page-in-page" components, and ⬚ **external/unresolved** lazy children
+- 🟥 Optionally highlights **orphan routes** (no inbound navigation) from a JSON you supply
+- 🟢 Zero runtime deps beyond your project's `typescript`; renders with [graphviz](https://graphviz.org)
 
-> Generated from the bundled [`examples/demo-app`](examples/demo-app). Reproduce it with:
+![Example app → route → page → component graph](https://raw.githubusercontent.com/ignikah-dev/ng-component-graph/main/docs/example-graph.png)
+
+> Generated from the bundled [`examples/demo-app`](examples/demo-app):
 > ```bash
 > node component-graph.mjs examples/demo-app --png docs/example-graph.png
 > ```
-> Note how each node is coloured by role — green pages compose grey children, the blue
-> `app-settings-page` is a route page with no children (normal), `app-confirm-dialog` is
-> purple because it's opened via `dialog.open()`, and the red `app-legacy-banner` is an
-> unused **suspect** worth a closer look.
+> The yellow **app root** fans out into cream **route paths**, each route points (green arrow)
+> to its green **page component**, and pages expand into grey **child components** — note
+> `app-empty-state` is shared by two pages.
 
 ---
 
@@ -27,17 +33,18 @@ It reads each `@Component`'s standalone `imports: [...]` array via the **TypeScr
 No install required — run it with `node` against any Angular app that has `typescript` on its path:
 
 ```bash
-node component-graph.mjs <app-src-or-app-dir>
+node component-graph.mjs <app-dir> --svg graph.svg
 ```
 
 Or install globally / as a dev dependency:
 
 ```bash
 npm i -D ng-component-graph
-npx ng-component-graph apps/my-app
+npx ng-component-graph apps/my-app --svg graph.svg
 ```
 
-`typescript` is a peer dependency (any Angular project already has it). For SVG/PNG output you also need [graphviz](https://graphviz.org):
+`typescript` is a peer dependency (any Angular project already has it). Rendering to SVG/PNG
+needs [graphviz](https://graphviz.org):
 
 ```bash
 brew install graphviz      # macOS
@@ -49,104 +56,99 @@ apt install graphviz       # Debian/Ubuntu
 The tool is pure Node.js and works on Windows (paths are handled with `node:path`).
 
 ```powershell
-# Node.js — install once (any one of these)
-winget install OpenJS.NodeJS.LTS
+winget install OpenJS.NodeJS.LTS          # Node.js (once)
+node component-graph.mjs apps\my-app --svg graph.svg
+npx ng-component-graph apps\my-app --svg graph.svg
 
-# Run it (PowerShell or cmd) — same flags as everywhere else
-node component-graph.mjs apps\my-app
-npx ng-component-graph apps\my-app
-
-# Optional: graphviz, only needed for --svg / --png
-winget install Graphviz.Graphviz      # or: choco install graphviz / scoop install graphviz
+winget install Graphviz.Graphviz          # optional, for --svg / --png
 ```
 
-After installing Graphviz, open a **new** terminal so `dot.exe` is on `PATH`
-(`dot -V` should print a version). If `--svg`/`--png` reports *"is graphviz installed?"*,
-that PATH refresh is almost always the fix. The Mermaid/JSON/DOT outputs need no Graphviz.
-
-> Both `apps\my-app` and `apps/my-app` work as the argument on Windows.
+After installing Graphviz, open a **new** terminal so `dot.exe` is on `PATH` (`dot -V` should
+print a version). Both `apps\my-app` and `apps/my-app` work as the argument.
 
 ---
 
 ## Usage
 
 ```bash
-# Mermaid flowchart + summary to stdout
+# DOT to stdout + summary to stderr (no graphviz needed)
 node component-graph.mjs apps/my-app
 
-# Markdown report (embeds the Mermaid graph)
-node component-graph.mjs apps/my-app --md graph.md
-
-# Machine-readable nodes/edges/isolated
-node component-graph.mjs apps/my-app --json graph.json
-
-# Rendered, colour-coded image (needs graphviz)
+# Rendered image (needs graphviz)
 node component-graph.mjs apps/my-app --svg graph.svg
 node component-graph.mjs apps/my-app --png graph.png
 
-# Raw graphviz DOT (style it yourself)
+# Raw graphviz DOT to a file (style it yourself)
 node component-graph.mjs apps/my-app --dot graph.dot
+
+# Highlight orphan routes in red (see below)
+node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 ```
 
-The argument can be the app directory (`apps/my-app`), its `src`, or its `src/app` — the
-tool finds the source root itself.
+The argument can be the app directory (`apps/my-app`), its `src`, or its `src/app` — the tool
+finds the source root and the app's root `Routes` (`appRoutes`, or the array exported from
+`app.routes.ts`) itself.
 
-### Example output
+### Example summary (stderr)
 
 ```
-flowchart TD
-  ProjectListComponent["app-project-list"]
-  PageHeaderComponent["app-page-header"]
-  ProjectListComponent --> PageHeaderComponent
-  ...
-
-✅ No suspect isolated components.
-app=my-app  components=20  edges=11  isolated=8 (pages=8 / dialogs=0 / suspect=0)
+app=my-app  routes=16  page-comps=9  child-comps=8  dual-role=0
+route exports never loaded via loadChildren: COMPOSITION_ROUTES(0)
 ```
 
 ---
 
-## How it classifies "isolated" components
+## What the colours mean
 
-A component with no parent **and** no child edge is *isolated in the composition graph*.
-That is **not** the same as being dead code — a route-level page legitimately has no parent
-component. The tool sorts isolated nodes into four buckets (and colours them in the image):
+| Colour | Node | Meaning |
+|--------|------|---------|
+| 🟡 yellow | app root | the bootstrapped application |
+| 🟦 blue | layout shell route | a route whose `component:` name contains `Layout` |
+| 🟧 cream | route path | a reconstructed URL path (with `data.title` if present) |
+| 🟢 green | page component | the component a route mounts |
+| ⬜ grey | child component | composed by a page via `imports[]` |
+| 🟧 amber | ★ route+child | a component that is **both** a route target **and** another page's child (a "page-in-page") |
+| ⬚ dashed grey | external/unresolved | a `loadChildren` whose route export isn't found in this app |
+| 🟥 red | orphan route | (with `--nav-json`) a route with no inbound navigation |
 
-| Colour | Bucket | Meaning |
-|--------|--------|---------|
-| 🟩 green | page with children | a page/component that composes others |
-| ⬜ grey | composed child | used by a parent's `imports[]` |
-| 🟦 blue | isolated page / bootstrap root | mounted by a route or `bootstrapApplication` / `rootComponent:` — **normal** |
-| 🟪 purple | dialog | opened via `dialog.open(X)`, so its selector isn't in any template — **normal** |
-| 🟥 red | **suspect** | not in a template, not a route, not a dialog — **verify manually** |
-
-> ⚠️ The 🟥 **suspect** list is a *first-pass filter, not a verdict.* It can have false
-> positives (e.g. a lazy route wired with an unusual pattern, or a component pulled in via a
-> spread `imports: [...SHARED]`). Confirm "is this really dead?" with a route-aware orphan
-> check and a `selector` + class-name grep before deleting anything.
+It also reports on stderr any exported `Routes` array that is **never** `loadChildren`'d —
+often a leftover/empty routes file.
 
 ---
 
-## Recognised entry points
+## Highlighting orphan routes (`--nav-json`)
 
-So that real entry points aren't mistaken for orphans, the tool resolves:
+This tool maps *structure*; it doesn't crawl your `routerLink`s to decide which routes are
+actually reachable. If you have that data (from your own route-audit step), pass it as JSON to
+colour unreachable routes/pages red:
 
-- **Routes** — `*.routes.ts` with `loadComponent: () => import('...').then(m => m.XComponent)`
-  or `component: XComponent`.
-- **Bootstrap** — `main.ts` using `bootstrapApplication(AppComponent, ...)`, a custom
-  wrapper that passes `rootComponent: AppComponent`, or any `*Component` referenced in `main.ts`.
-- **Dialogs** — any `*.open(XComponent)` call (e.g. `MatDialog` / CDK `Dialog`).
+```json
+{
+  "orphans": [
+    { "path": "/settings", "component": "SettingsPageComponent" }
+  ]
+}
+```
+
+```bash
+node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
+```
+
+Any route whose reconstructed `path` (or whose page `component`) appears in the list is drawn
+red, so dead routes stand out against the rest of the tree.
 
 ---
 
 ## Limitations
 
-- **Standalone only.** Only `@Component({ standalone: true, imports: [...] })` composition is
-  parsed; classic `NgModule` `declarations`/`imports` are out of scope.
-- **`imports[]` must list identifiers.** A spread of a shared array
-  (`imports: [...SHARED_IMPORTS]`) is not expanded, so members reached only that way may show
-  as isolated. (They'll fall into 🟥 suspect — verify before acting.)
-- **It maps composition, not data flow.** Services, signals, and inputs/outputs are not edges.
+- **Standalone only.** Composition is read from `@Component({ imports: [...] })`; classic
+  `NgModule` `declarations`/`imports` are out of scope.
+- **`imports[]` must list identifiers.** A spread of a shared array (`imports: [...SHARED]`)
+  isn't expanded, so members reached only that way won't show as children.
+- **Route reconstruction is static.** Path params (`:id`) are kept verbatim; programmatic
+  `router.navigate` targets aren't resolved. The "never loadChildren'd" report is a heuristic —
+  a routes array pulled in by a direct `import` + spread (rather than `loadChildren`) may be
+  reported even though it is used.
 
 ---
 

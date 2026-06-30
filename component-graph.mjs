@@ -1,333 +1,272 @@
 #!/usr/bin/env node
 /**
- * component-graph.mjs
+ * ng-component-graph
  * --------------------------------------------------------------------------
- * Draw the "who composes whom" relationship between standalone Angular
- * components in an app, and flag components that sit alone in the graph.
+ * Draw the full hierarchy of a standalone Angular app:
+ *   app (bootstrap) → route (URL path) → page component → child component → child…
  *
- * For standalone components, the @Component `imports: [...]` array is the
- * authoritative list of which other components a template may use — so this
- * tool parses that array with the TypeScript AST. That is more accurate than
- * scanning ES imports (e.g. with madge), which also picks up services, pipes
- * and type-only imports that never appear in a template.
+ * It reconstructs the real URL path tree from `*.routes.ts` (inline `children`,
+ * lazy `loadChildren`, `loadComponent`, `component:`, `redirectTo`, `data.title`),
+ * connects each route to its page component, then expands each page via its
+ * standalone `@Component({ imports: [...] })` array into the child components it
+ * composes — all parsed with the TypeScript AST (not regex), so the edges match
+ * what a template can actually use.
+ *
+ * It automatically marks:
+ *   - shell routes    — a `component:` whose name contains "Layout" (blue).
+ *   - dual-role pages  — a component that is BOTH a route target AND someone
+ *                        else's imports[] child, i.e. a page embedded in a page
+ *                        (amber).
+ *   - external/unresolved lazy children — a `loadChildren` whose route export
+ *                        can't be found in this app (dashed grey).
+ *   - empty / never-loaded route exports — exported `Routes` arrays that nothing
+ *                        ever `loadChildren`s (reported on stderr).
+ *   - orphan routes    — optional: pass --nav-json to colour routes/pages that
+ *                        have no inbound navigation red (see README for shape).
  *
  * Usage:
- *   node component-graph.mjs <app-src-or-app-dir>
- *        [--md out.md] [--json out.json] [--dot out.dot] [--svg out.svg] [--png out.png]
- *   (--svg / --png require graphviz: `brew install graphviz` / `apt install graphviz`)
+ *   node component-graph.mjs <app-dir> [--png out.png] [--svg out.svg] [--dot out.dot]
+ *                                      [--nav-json orphans.json]
+ *   (--svg/--png require graphviz: `brew install graphviz` / `apt install graphviz`)
  *
- * Examples:
- *   node component-graph.mjs apps/my-app
- *   node component-graph.mjs apps/my-app --md graph.md
- *   node component-graph.mjs apps/my-app --svg graph.svg
- *
- * What it does:
- *   1. Scan every *.component.ts under the app src; via the TS AST read each
- *      @Component's class name, selector, and standalone `imports: [...]`.
- *   2. Build `parent -> child` edges where a parent's imports[] references
- *      another component defined in the same app.
- *   3. Resolve *.routes.ts (loadComponent / component:) and main.ts bootstrap
- *      to recognise route-mounted pages and the bootstrap root.
- *   4. Classify "isolated" nodes (no parent/child edge) so isolated != orphan:
- *        - route-mounted page / bootstrap root   -> normal
- *        - opened via dialog.open(X)             -> normal
- *        - none of the above                     -> SUSPECT (verify manually)
- *   5. Emit a Mermaid flowchart + summary; optional Markdown / JSON / graphviz.
- *
- * Note: only standalone `imports[]` is parsed (NgModule declarations/imports
- *       are out of scope). The SUSPECT list is a first-pass filter, not a
- *       verdict — confirm dead code with a route-aware orphan check / grep.
+ * With no --png/--svg/--dot, the graphviz DOT source is written to stdout and a
+ * one-line summary to stderr.
  *
  * License: MIT
  */
 
 import { createRequire } from 'node:module';
 import { readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
-import { join, resolve, relative } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
 
-// ---------- args ----------
 const argv = process.argv.slice(2);
-const positional = argv.filter(a => !a.startsWith('--'));
-const flag = name => {
-  const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : null;
-};
-const input = positional[0];
-const mdOut = flag('--md');
-const jsonOut = flag('--json');
-const dotOut = flag('--dot');
-const svgOut = flag('--svg');
-const pngOut = flag('--png');
+const pos = argv.filter((a) => !a.startsWith('--'));
+const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
+const input = pos[0];
+if (!input) { console.error('Usage: node component-graph.mjs <app-dir> [--png out] [--svg out] [--dot out] [--nav-json orphans.json]'); process.exit(2); }
+const pngOut = flag('--png'), svgOut = flag('--svg'), dotOut = flag('--dot');
+const navJson = flag('--nav-json');   // optional: JSON listing orphan routes → colour them red
 
-if (!input) {
-  console.error('Usage: node component-graph.mjs <app-src-or-app-dir> [--md out.md] [--json out.json] [--dot out.dot] [--svg out.svg] [--png out.png]');
-  process.exit(2);
+// Orphan routes (defined but nothing navigates to them). Shape:
+//   { "orphans": [ { "path": "/settings", "component": "SettingsPageComponent" }, ... ] }
+const orphanPaths = new Set(), orphanComps = new Set();
+if (navJson && existsSync(resolve(process.cwd(), navJson))) {
+  try {
+    const nav = JSON.parse(readFileSync(resolve(process.cwd(), navJson), 'utf8'));
+    for (const o of nav.orphans || []) { if (o.path) orphanPaths.add(o.path.startsWith('/') ? o.path : '/' + o.path); if (o.component) orphanComps.add(o.component); }
+  } catch (e) { console.error('Failed to read --nav-json: ' + e.message); }
 }
 
-// Accept either the app dir or its src dir.
 let srcDir = resolve(process.cwd(), input);
 if (existsSync(join(srcDir, 'src', 'app'))) srcDir = join(srcDir, 'src', 'app');
 else if (existsSync(join(srcDir, 'app'))) srcDir = join(srcDir, 'app');
-else if (existsSync(join(srcDir, 'src'))) srcDir = join(srcDir, 'src');
-if (!existsSync(srcDir)) {
-  console.error(`Source directory not found: ${srcDir}`);
-  process.exit(2);
-}
+if (!existsSync(srcDir)) { console.error(`Source directory not found: ${srcDir}`); process.exit(2); }
 const appName = input.replace(/\/+$/, '').split('/').filter(Boolean).pop();
-const rel = p => relative(process.cwd(), p);
 
-// ---------- collect files ----------
+// ---------- walk ----------
 function walk(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === 'node_modules' || e.name === 'api') continue; // skip deps + generated client
+    if (e.name === 'node_modules' || e.name === 'api') continue;
     const full = join(dir, e.name);
-    if (e.isDirectory()) walk(full, out);
-    else out.push(full);
+    if (e.isDirectory()) walk(full, out); else out.push(full);
   }
   return out;
 }
 const allFiles = walk(srcDir);
-const componentFiles = allFiles.filter(f => /\.component\.ts$/.test(f) && !/\.spec\.ts$/.test(f));
-const routeFiles = allFiles.filter(f => /\.routes\.ts$/.test(f) || /app\.routes\.ts$/.test(f));
+const routeFiles = allFiles.filter((f) => /\.routes\.ts$/.test(f));
+const componentFiles = allFiles.filter((f) => /\.component\.ts$/.test(f) && !/\.spec\.ts$/.test(f));
 
-// ---------- parse each component ----------
-function parse(file) {
-  const src = readFileSync(file, 'utf8');
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true);
+// ---------- parse component imports[] (page → child edges) ----------
+function parseComponent(file) {
+  const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
   let info = null;
-  function visit(node) {
+  (function visit(node) {
     if (ts.isClassDeclaration(node) && node.name) {
-      const deco = ts.getDecorators?.(node)?.find(d => {
-        const e = d.expression;
-        return ts.isCallExpression(e) && e.expression.getText(sf) === 'Component';
-      });
+      const deco = ts.getDecorators?.(node)?.find((d) => ts.isCallExpression(d.expression) && d.expression.expression.getText(sf) === 'Component');
       if (deco) {
         const arg = deco.expression.arguments[0];
-        let selector = null;
-        const imports = [];
-        if (arg && ts.isObjectLiteralExpression(arg)) {
-          for (const p of arg.properties) {
-            if (!ts.isPropertyAssignment(p)) continue;
-            const key = p.name.getText(sf);
-            if (key === 'selector' && ts.isStringLiteral(p.initializer)) selector = p.initializer.text;
-            if (key === 'imports' && ts.isArrayLiteralExpression(p.initializer)) {
-              for (const el of p.initializer.elements) imports.push(el.getText(sf).trim());
-            }
-          }
+        let selector = null; const imports = [];
+        if (arg && ts.isObjectLiteralExpression(arg)) for (const p of arg.properties) {
+          if (!ts.isPropertyAssignment(p)) continue;
+          const key = p.name.getText(sf);
+          if (key === 'selector' && ts.isStringLiteral(p.initializer)) selector = p.initializer.text;
+          if (key === 'imports' && ts.isArrayLiteralExpression(p.initializer)) for (const el of p.initializer.elements) imports.push(el.getText(sf).trim());
         }
         info = { className: node.name.getText(sf), selector, imports, file };
       }
     }
     ts.forEachChild(node, visit);
-  }
-  visit(sf);
+  })(sf);
   return info;
 }
-
-const components = componentFiles.map(parse).filter(Boolean);
-const byClass = new Map(components.map(c => [c.className, c]));
-
-// ---------- edges: imports[] members that are app components ----------
-const edges = [];
-const hasOutgoing = new Set();
-const hasIncoming = new Set();
+const components = componentFiles.map(parseComponent).filter(Boolean);
+const byClass = new Map(components.map((c) => [c.className, c]));
+const childEdges = new Map(); // class -> [childClass]
 for (const c of components) {
+  const kids = [];
   for (const imp of c.imports) {
-    // an imports[] entry may be `FooComponent` or `FooComponent /* comment */`; take the identifier
-    const idMatch = imp.match(/[A-Za-z_$][A-Za-z0-9_$]*/);
-    const id = idMatch ? idMatch[0] : imp;
-    if (byClass.has(id) && id !== c.className) {
-      edges.push([c.className, id]);
-      hasOutgoing.add(c.className);
-      hasIncoming.add(id);
+    const id = (imp.match(/[A-Za-z_$][A-Za-z0-9_$]*/) || [])[0];
+    if (id && byClass.has(id) && id !== c.className) kids.push(id);
+  }
+  if (kids.length) childEdges.set(c.className, kids);
+}
+
+// ---------- parse *.routes.ts into export -> route objects ----------
+function parseRouteObj(node, sf) {
+  const o = { path: null, component: null, loadComp: null, loadChildrenExport: null, children: [], redirect: false, title: null };
+  if (!ts.isObjectLiteralExpression(node)) return o;
+  for (const p of node.properties) {
+    if (!ts.isPropertyAssignment(p)) continue;
+    const key = p.name.getText(sf);
+    const txt = p.initializer.getText(sf);
+    if (key === 'path' && ts.isStringLiteral(p.initializer)) o.path = p.initializer.text;
+    else if (key === 'redirectTo') o.redirect = true;
+    else if (key === 'component') o.component = txt.trim();
+    else if (key === 'loadComponent') { const m = txt.match(/m\.([A-Za-z_$][A-Za-z0-9_$]*)/); o.loadComp = m ? m[1] : null; }
+    else if (key === 'loadChildren') { const m = txt.match(/m\.([A-Za-z_$][A-Za-z0-9_$]*)/); o.loadChildrenExport = m ? m[1] : null; }
+    else if (key === 'children' && ts.isArrayLiteralExpression(p.initializer)) o.children = p.initializer.elements.map((e) => parseRouteObj(e, sf));
+    else if (key === 'data') { const t = txt.match(/title:\s*['"]([^'"]+)['"]/); if (t) o.title = t[1]; }
+  }
+  return o;
+}
+const routeExports = new Map(); // exportName -> { file, routes }
+for (const f of routeFiles) {
+  const sf = ts.createSourceFile(f, readFileSync(f, 'utf8'), ts.ScriptTarget.Latest, true);
+  (function visit(node) {
+    if (ts.isVariableStatement(node) && node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) {
+      for (const d of node.declarationList.declarations) {
+        if (d.name && ts.isIdentifier(d.name) && d.initializer && ts.isArrayLiteralExpression(d.initializer)) {
+          routeExports.set(d.name.getText(sf), { file: f, routes: d.initializer.elements.map((e) => parseRouteObj(e, sf)) });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  })(sf);
+}
+
+// ---------- build route tree from the app's root routes ----------
+const joinPath = (a, b) => { if (!b) return a || '/'; const seg = b.replace(/^\//, ''); return (a === '/' || a === '') ? '/' + seg : a + '/' + seg; };
+const routeNodes = []; // { id, path, comp, kind:'page'|'shell'|'external'|'redirect'|'root', title }
+const routeTreeEdges = []; // [parentId, childId]
+const route2page = []; // [routeId, compClass]
+let rid = 0;
+const emptyChildExports = new Set([...routeExports.keys()]); // will delete the ones referenced
+
+function walkRoutes(list, parentPath, parentId) {
+  for (const r of list) {
+    if (r.redirect) continue;
+    const full = joinPath(parentPath, r.path);
+    const id = 'r' + rid++;
+    let kind = 'page', comp = r.component || r.loadComp || null, title = r.title;
+    if (r.component && /Layout/.test(r.component)) kind = 'shell';
+    routeNodes.push({ id, path: full, comp, kind, title });
+    if (parentId) routeTreeEdges.push([parentId, id]);
+    if (comp) route2page.push([id, comp]);
+    // inline children
+    if (r.children?.length) walkRoutes(r.children, full, id);
+    // lazy children via loadChildren
+    if (r.loadChildrenExport) {
+      emptyChildExports.delete(r.loadChildrenExport);
+      const target = routeExports.get(r.loadChildrenExport);
+      if (target) walkRoutes(target.routes, full, id);
+      else { const exId = 'r' + rid++; routeNodes.push({ id: exId, path: full + '  (external/unresolved: ' + r.loadChildrenExport + ')', kind: 'external' }); routeTreeEdges.push([id, exId]); }
     }
   }
 }
+const app = routeExports.get('appRoutes') || [...routeExports.values()].find((v) => /app\.routes\.ts$/.test(v.file));
+const rootId = 'app';
+routeNodes.push({ id: rootId, path: appName + ' (bootstrap)', kind: 'root' });
+if (app) walkRoutes(app.routes, '', rootId);
 
-// ---------- route-mounted components (so "isolated" can exclude pages) ----------
-const routeMounted = new Set();
-for (const rf of routeFiles) {
-  const txt = readFileSync(rf, 'utf8');
-  // loadComponent: () => import('...').then(m => m.FooComponent)  or  component: FooComponent
-  for (const m of txt.matchAll(/\bm\.([A-Za-z_$][A-Za-z0-9_$]*Component)\b/g)) routeMounted.add(m[1]);
-  for (const m of txt.matchAll(/\bcomponent:\s*([A-Za-z_$][A-Za-z0-9_$]*Component)\b/g)) routeMounted.add(m[1]);
-}
+// emptyChildExports now = route exports that are never loadChildren'd (and not the root)
+emptyChildExports.delete('appRoutes');
+if (app) { for (const [name, v] of routeExports) if (v === app) emptyChildExports.delete(name); }
+const emptyRouteFiles = [...emptyChildExports].map((n) => ({ name: n, file: routeExports.get(n)?.file, count: routeExports.get(n)?.routes.length ?? 0 }));
 
-// ---------- bootstrap root component (a legitimate entry point) ----------
-// main.ts usually lives in src/ (one level above srcDir = src/app), outside the walk.
-const bootstrapRoots = new Set();
-const mainCandidates = [join(srcDir, '..', 'main.ts'), join(srcDir, 'main.ts'), ...allFiles.filter(f => /(^|[\\/])main\.ts$/.test(f))];
-for (const f of mainCandidates) {
-  if (!existsSync(f)) continue;
-  const txt = readFileSync(f, 'utf8');
-  // standard bootstrapApplication(AppComponent, ...)
-  for (const m of txt.matchAll(/bootstrapApplication\(\s*([A-Za-z_$][A-Za-z0-9_$]*)/g)) bootstrapRoots.add(m[1]);
-  // custom bootstrap wrappers that pass `rootComponent: AppComponent`
-  for (const m of txt.matchAll(/rootComponent:\s*([A-Za-z_$][A-Za-z0-9_$]*)/g)) bootstrapRoots.add(m[1]);
-  // fallback: any *Component referenced in main.ts is treated as an entry point
-  for (const m of txt.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$]*Component)\b/g)) bootstrapRoots.add(m[1]);
-}
+// ---------- dual-role detection: a route-target component that is ALSO someone's child ----------
+const routeTargets = new Set(route2page.map(([, c]) => c));
+const allChildren = new Set([...childEdges.values()].flat());
+const dualRole = new Set([...routeTargets].filter((c) => allChildren.has(c)));
 
-// ---------- components opened via dialog.open(X) ----------
-// Their selector is not in any template by design, so don't treat them as suspects.
-const dialogOpened = new Set();
-for (const f of allFiles.filter(f => /\.ts$/.test(f) && !/\.spec\.ts$/.test(f))) {
-  const txt = readFileSync(f, 'utf8');
-  for (const m of txt.matchAll(/\.open\(\s*([A-Za-z_$][A-Za-z0-9_$]*Component)\b/g)) dialogOpened.add(m[1]);
-}
-
-// ---------- isolated (no parent/child edge in the composition graph) ----------
-const isolated = components.filter(c => !hasOutgoing.has(c.className) && !hasIncoming.has(c.className));
-const isLegit = c => routeMounted.has(c.className) || bootstrapRoots.has(c.className);
-const isolatedPages = isolated.filter(isLegit);
-const isolatedDialogs = isolated.filter(c => !isLegit(c) && dialogOpened.has(c.className));
-const isolatedOther = isolated.filter(c => !isLegit(c) && !dialogOpened.has(c.className));
-
-// ---------- Mermaid ----------
-const nodeId = cls => cls.replace(/[^A-Za-z0-9]/g, '_');
-const label = c => (c.selector || c.className);
-function mermaid() {
-  const lines = ['flowchart TD'];
-  const inGraph = new Set(edges.flat());
-  for (const cls of inGraph) {
-    const c = byClass.get(cls);
-    lines.push(`  ${nodeId(cls)}["${label(c)}"]`);
+// ---------- collect page→child→child (recursive) ----------
+const compEdges = []; const compEdgeSeen = new Set(); const compNodes = new Set();
+function expand(cls, seen = new Set()) {
+  if (seen.has(cls)) return; seen.add(cls); compNodes.add(cls);
+  for (const k of childEdges.get(cls) || []) {
+    const key = cls + '->' + k;
+    if (!compEdgeSeen.has(key)) { compEdgeSeen.add(key); compEdges.push([cls, k]); }
+    expand(k, seen);
   }
-  for (const [a, b] of edges) lines.push(`  ${nodeId(a)} --> ${nodeId(b)}`);
-  return lines.join('\n');
 }
+for (const c of routeTargets) expand(c);
 
-// ---------- DOT (graphviz; all nodes, colour-coded by role) ----------
-const suspectSet = new Set(isolatedOther.map(c => c.className));
-const dialogSet = new Set(isolatedDialogs.map(c => c.className));
-const pageSet = new Set(isolatedPages.map(c => c.className));
-function role(cls) {
-  if (suspectSet.has(cls)) return { fill: '#ffd6d6', stroke: '#d62828' };  // red: suspect
-  if (dialogSet.has(cls)) return { fill: '#e7d6ff', stroke: '#7b2ff7' };   // purple: dialog
-  if (pageSet.has(cls)) return { fill: '#d6e4ff', stroke: '#1d4ed8' };     // blue: isolated page/root
-  if (routeMounted.has(cls) || bootstrapRoots.has(cls)) return { fill: '#d6f5dd', stroke: '#1a7f37' }; // green: composed page
-  return { fill: '#f4f4f4', stroke: '#666' };                              // grey: child component
-}
+// ---------- DOT ----------
+const lbl = (c) => { const cc = byClass.get(c); return cc ? (cc.selector || c) : c; };
+const esc = (s) => String(s).replace(/"/g, '\\"');
 function dot() {
-  const lines = [
-    'digraph components {',
-    '  rankdir=TB;',
-    `  graph [fontname="Helvetica", label="${appName} — component composition", labelloc=t, fontsize=18];`,
-    '  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11];',
-    '  edge  [color="#888", arrowsize=0.7];',
+  const L = [
+    'digraph route_components {',
+    '  rankdir=LR;',
+    `  graph [fontname="Helvetica", label="${appName} — app → route → page → component", labelloc=t, fontsize=20];`,
+    '  node [fontname="Helvetica", fontsize=11];',
+    '  edge [color="#888", arrowsize=0.7];',
+    '  // --- root ---',
+    `  ${rootId} [label="${appName}", shape=doublecircle, style=filled, fillcolor="#ffe08a", color="#b8860b"];`,
+    '  // --- route nodes ---',
   ];
-  for (const c of components) {
-    const r = role(c.className);
-    lines.push(`  "${c.className}" [label="${label(c)}", fillcolor="${r.fill}", color="${r.stroke}"];`);
+  for (const n of routeNodes) {
+    if (n.id === rootId) continue;
+    const orphan = orphanPaths.has(n.path);
+    if (orphan) L.push(`  ${n.id} [label="✗ orphan route\\n${esc(n.path)}${n.title ? '\\n“' + esc(n.title) + '”' : ''}", shape=note, style="filled,bold", fillcolor="#ffd6d6", color="#d62828", penwidth=2];`);
+    else if (n.kind === 'shell') L.push(`  ${n.id} [label="${esc(n.path)}\\n(${n.comp})", shape=box, style="filled,rounded", fillcolor="#cfe8ff", color="#1d4ed8"];`);
+    else if (n.kind === 'external') L.push(`  ${n.id} [label="${esc(n.path)}", shape=note, style="filled,dashed", fillcolor="#f4f4f4", color="#999"];`);
+    else L.push(`  ${n.id} [label="${esc(n.path)}${n.title ? '\\n“' + esc(n.title) + '”' : ''}", shape=note, style=filled, fillcolor="#fff7e6", color="#d39e00"];`);
   }
-  for (const [a, b] of edges) lines.push(`  "${a}" -> "${b}";`);
-  lines.push('  subgraph cluster_legend {');
-  lines.push('    label="legend"; fontsize=12; style=dashed; color="#bbb";');
-  const legend = [
-    ['L_page', 'page with children', '#d6f5dd', '#1a7f37'],
-    ['L_child', 'composed child', '#f4f4f4', '#666'],
-    ['L_route', 'isolated page/root (ok)', '#d6e4ff', '#1d4ed8'],
-    ['L_dialog', 'dialog.open (ok)', '#e7d6ff', '#7b2ff7'],
-    ['L_suspect', 'suspect (verify)', '#ffd6d6', '#d62828'],
-  ];
-  for (const [id, txt, fill, stroke] of legend)
-    lines.push(`    ${id} [label="${txt}", fillcolor="${fill}", color="${stroke}"];`);
-  lines.push('    ' + legend.map(l => l[0]).join(' -> ') + ' [style=invis];');
-  lines.push('  }');
-  lines.push('}');
-  return lines.join('\n');
-}
-function render(format, outPath) {
-  try {
-    execFileSync('dot', ['-T' + format, '-o', resolve(process.cwd(), outPath)], { input: dot() });
-    console.log(`${format.toUpperCase()} written: ${outPath}`);
-  } catch (e) {
-    console.error(`Failed to render ${format} (is graphviz installed?): ${e.message}`);
-    process.exitCode = 1;
+  L.push('  // --- route tree edges ---');
+  for (const [a, b] of routeTreeEdges) L.push(`  ${a} -> ${b} [color="#bbb"];`);
+  // --- page + child component nodes ---
+  L.push('  // --- page + child component nodes ---');
+  for (const c of compNodes) {
+    const isPage = routeTargets.has(c);
+    const dual = dualRole.has(c);
+    const orphan = orphanComps.has(c);
+    const fill = orphan ? '#ffd6d6' : dual ? '#ffd6a5' : isPage ? '#d6f5dd' : '#f4f4f4';
+    const stroke = orphan ? '#d62828' : dual ? '#d39e00' : isPage ? '#1a7f37' : '#666';
+    const extra = orphan ? '\\n✗ orphan-route page' : dual ? '\\n★ route+child' : '';
+    L.push(`  C_${c} [label="${esc(lbl(c))}${extra}", shape=box, style="filled,rounded", fillcolor="${fill}", color="${stroke}"];`);
   }
+  // --- route -> page edges ---
+  L.push('  // --- route -> page component ---');
+  for (const [r, c] of route2page) if (compNodes.has(c)) L.push(`  ${r} -> C_${c} [color="#1a7f37", penwidth=1.4];`);
+  // --- page -> child edges ---
+  L.push('  // --- component composition ---');
+  for (const [a, b] of compEdges) L.push(`  C_${a} -> C_${b} [color="#555"];`);
+  // --- legend ---
+  L.push('  subgraph cluster_legend { label="legend"; fontsize=12; style=dashed; color="#bbb";');
+  L.push('    Lr [label="app root", shape=doublecircle, style=filled, fillcolor="#ffe08a", color="#b8860b"];');
+  L.push('    Lsh [label="layout shell route", shape=box, style="filled,rounded", fillcolor="#cfe8ff", color="#1d4ed8"];');
+  L.push('    Lrt [label="route path", shape=note, style=filled, fillcolor="#fff7e6", color="#d39e00"];');
+  L.push('    Lpg [label="page component", shape=box, style="filled,rounded", fillcolor="#d6f5dd", color="#1a7f37"];');
+  L.push('    Lch [label="child component", shape=box, style="filled,rounded", fillcolor="#f4f4f4", color="#666"];');
+  L.push('    Ldu [label="★ route+child (page-in-page)", shape=box, style="filled,rounded", fillcolor="#ffd6a5", color="#d39e00"];');
+  L.push('    Lor [label="✗ orphan route (no inbound nav)", shape=note, style="filled,bold", fillcolor="#ffd6d6", color="#d62828", penwidth=2];');
+  L.push('    Lr -> Lsh -> Lrt -> Lpg -> Lch -> Ldu -> Lor [style=invis];');
+  L.push('  }');
+  L.push('}');
+  return L.join('\n');
 }
 
-// ---------- graphviz file outputs ----------
-if (dotOut) { writeFileSync(resolve(process.cwd(), dotOut), dot()); console.log(`DOT written: ${dotOut}`); }
+const dotSrc = dot();
+if (dotOut) { writeFileSync(resolve(process.cwd(), dotOut), dotSrc); console.log('DOT written: ' + dotOut); }
+function render(fmt, out) { try { execFileSync('dot', ['-T' + fmt, '-o', resolve(process.cwd(), out)], { input: dotSrc }); console.log(`${fmt.toUpperCase()} written: ${out}`); } catch (e) { console.error(`Failed to render ${fmt} (is graphviz installed?): ${e.message}`); process.exitCode = 1; } }
 if (svgOut) render('svg', svgOut);
 if (pngOut) render('png', pngOut);
+if (!dotOut && !svgOut && !pngOut) console.log(dotSrc); // default: DOT to stdout
 
-// ---------- text / markdown / json outputs ----------
-const hasFileOut = mdOut || jsonOut || dotOut || svgOut || pngOut;
-const summary =
-  `app=${appName}  components=${components.length}  edges=${edges.length}  ` +
-  `isolated=${isolated.length} (pages=${isolatedPages.length} / dialogs=${isolatedDialogs.length} / suspect=${isolatedOther.length})`;
-
-if (!hasFileOut) {
-  console.log('```mermaid');
-  console.log(mermaid());
-  console.log('```');
-  console.log('');
-  if (isolatedPages.length)
-    console.log('Isolated but route page / bootstrap root (ok): ' + isolatedPages.map(label).join(', '));
-  if (isolatedDialogs.length)
-    console.log('Isolated but opened via dialog.open() (ok): ' + isolatedDialogs.map(c => c.className).join(', '));
-  if (isolatedOther.length) {
-    console.log('⚠️ Suspect — not in a template, route, or dialog (verify manually):');
-    for (const c of isolatedOther) console.log('   - ' + c.className + '  ' + rel(c.file));
-  } else {
-    console.log('✅ No suspect isolated components.');
-  }
-}
-console.error(summary);
-
-if (mdOut) {
-  const md = [
-    `# ${appName} — Component composition graph`,
-    '',
-    `> Tool: \`component-graph.mjs\` · Source: \`${rel(srcDir)}\``,
-    `> ${summary}`,
-    '> Isolated != orphan; this graph only reflects standalone `imports[]` parent/child composition.',
-    '',
-    '## Graph',
-    '',
-    '```mermaid',
-    mermaid(),
-    '```',
-    '',
-    '## Isolated nodes (no parent/child edge)',
-    '',
-    '> Isolated != orphan. Route pages / bootstrap roots / dialogs have no parent component by design.',
-    '',
-    '### Route pages / bootstrap root (ok)',
-    isolatedPages.length ? isolatedPages.map(c => `- \`${c.className}\` (${c.selector || 'no selector'})`).join('\n') : '_(none)_',
-    '',
-    '### Dialogs (opened via dialog.open(), ok)',
-    isolatedDialogs.length ? isolatedDialogs.map(c => `- \`${c.className}\``).join('\n') : '_(none)_',
-    '',
-    '### ⚠️ Suspect (not in template/route/dialog — verify manually)',
-    isolatedOther.length ? isolatedOther.map(c => `- \`${c.className}\` — \`${rel(c.file)}\``).join('\n') : '_(none)_',
-    '',
-  ].join('\n');
-  writeFileSync(resolve(process.cwd(), mdOut), md);
-  console.log(`Markdown written: ${mdOut}`);
-}
-
-if (jsonOut) {
-  const data = {
-    app: appName,
-    src: rel(srcDir),
-    summary: {
-      components: components.length,
-      edges: edges.length,
-      isolated: isolated.length,
-      isolatedPages: isolatedPages.length,
-      isolatedDialogs: isolatedDialogs.length,
-      isolatedOther: isolatedOther.length,
-    },
-    nodes: components.map(c => ({ className: c.className, selector: c.selector, file: rel(c.file), routeMounted: routeMounted.has(c.className), dialogOpened: dialogOpened.has(c.className) })),
-    edges: edges.map(([a, b]) => ({ from: a, to: b })),
-    isolatedOther: isolatedOther.map(c => ({ className: c.className, selector: c.selector, file: rel(c.file) })),
-  };
-  writeFileSync(resolve(process.cwd(), jsonOut), JSON.stringify(data, null, 2));
-  console.log(`JSON written: ${jsonOut}`);
-}
+console.error(`app=${appName}  routes=${routeNodes.length - 1}  page-comps=${routeTargets.size}  child-comps=${compNodes.size - routeTargets.size}  dual-role=${dualRole.size}`);
+if (dualRole.size) console.error('dual-role (route page also embedded as a child): ' + [...dualRole].join(', '));
+if (emptyRouteFiles.length) console.error('route exports never loaded via loadChildren: ' + emptyRouteFiles.map((e) => `${e.name}(${e.count})`).join(', '));

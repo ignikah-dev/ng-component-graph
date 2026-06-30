@@ -1,7 +1,7 @@
 {
   "name": "ng-component-graph",
   "version": "0.1.0",
-  "description": "Draw the composition graph of standalone Angular components and flag ones that sit alone in the graph — from the @Component imports[] array, via the TypeScript AST.",
+  "description": "Draw the full hierarchy of a standalone Angular app — app → route → page component → child component — reconstructed from *.routes.ts and @Component imports[] via the TypeScript AST, rendered with graphviz.",
   "type": "module",
   "bin": {
     "ng-component-graph": "./component-graph.mjs"
@@ -22,8 +22,9 @@
     "standalone",
     "component",
     "graph",
+    "routes",
+    "route-tree",
     "dependency-graph",
-    "mermaid",
     "graphviz",
     "dead-code",
     "orphan",
