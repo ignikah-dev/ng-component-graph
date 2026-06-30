@@ -9,7 +9,7 @@ It reads each `@Component`'s standalone `imports: [...]` array via the **TypeScr
 - 🖼 Output as **Mermaid**, **JSON**, or a colour-coded **graphviz** SVG/PNG
 - 🔎 Distinguishes "isolated in the graph" from "actually dead" — **isolated ≠ orphan**
 
-![Example component composition graph](docs/example-graph.png)
+![Example component composition graph](https://raw.githubusercontent.com/ignikah-dev/ng-component-graph/main/docs/example-graph.png)
 
 > Generated from the bundled [`examples/demo-app`](examples/demo-app). Reproduce it with:
 > ```bash

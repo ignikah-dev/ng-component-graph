@@ -13,7 +13,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "graph": "node component-graph.mjs"
+    "graph": "node component-graph.mjs",
+    "test": "node test/smoke.mjs",
+    "prepublishOnly": "npm test"
   },
   "keywords": [
     "angular",
@@ -37,6 +39,12 @@
     "typescript": {
       "optional": false
     }
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "license": "MIT",
   "author": "Ignikah <hello@ignikah.dev>",
