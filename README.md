@@ -33,6 +33,28 @@ brew install graphviz      # macOS
 apt install graphviz       # Debian/Ubuntu
 ```
 
+### Windows
+
+The tool is pure Node.js and works on Windows (paths are handled with `node:path`).
+
+```powershell
+# Node.js — install once (any one of these)
+winget install OpenJS.NodeJS.LTS
+
+# Run it (PowerShell or cmd) — same flags as everywhere else
+node component-graph.mjs apps\my-app
+npx ng-component-graph apps\my-app
+
+# Optional: graphviz, only needed for --svg / --png
+winget install Graphviz.Graphviz      # or: choco install graphviz / scoop install graphviz
+```
+
+After installing Graphviz, open a **new** terminal so `dot.exe` is on `PATH`
+(`dot -V` should print a version). If `--svg`/`--png` reports *"is graphviz installed?"*,
+that PATH refresh is almost always the fix. The Mermaid/JSON/DOT outputs need no Graphviz.
+
+> Both `apps\my-app` and `apps/my-app` work as the argument on Windows.
+
 ---
 
 ## Usage

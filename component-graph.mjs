@@ -160,7 +160,7 @@ for (const rf of routeFiles) {
 // ---------- bootstrap root component (a legitimate entry point) ----------
 // main.ts usually lives in src/ (one level above srcDir = src/app), outside the walk.
 const bootstrapRoots = new Set();
-const mainCandidates = [join(srcDir, '..', 'main.ts'), join(srcDir, 'main.ts'), ...allFiles.filter(f => /(^|\/)main\.ts$/.test(f))];
+const mainCandidates = [join(srcDir, '..', 'main.ts'), join(srcDir, 'main.ts'), ...allFiles.filter(f => /(^|[\\/])main\.ts$/.test(f))];
 for (const f of mainCandidates) {
   if (!existsSync(f)) continue;
   const txt = readFileSync(f, 'utf8');
