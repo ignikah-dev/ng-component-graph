@@ -1,5 +1,9 @@
 # ng-component-graph
 
+[![Release](https://img.shields.io/github/v/release/ignikah-dev/ng-component-graph?sort=semver&color=2da44e)](https://github.com/ignikah-dev/ng-component-graph/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/ignikah-dev/ng-component-graph?color=blue)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+
 Draw the **full hierarchy** of a standalone Angular app:
 
 ```
