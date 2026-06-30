@@ -9,6 +9,17 @@ It reads each `@Component`'s standalone `imports: [...]` array via the **TypeScr
 - 🖼 Output as **Mermaid**, **JSON**, or a colour-coded **graphviz** SVG/PNG
 - 🔎 Distinguishes "isolated in the graph" from "actually dead" — **isolated ≠ orphan**
 
+![Example component composition graph](docs/example-graph.png)
+
+> Generated from the bundled [`examples/demo-app`](examples/demo-app). Reproduce it with:
+> ```bash
+> node component-graph.mjs examples/demo-app --png docs/example-graph.png
+> ```
+> Note how each node is coloured by role — green pages compose grey children, the blue
+> `app-settings-page` is a route page with no children (normal), `app-confirm-dialog` is
+> purple because it's opened via `dialog.open()`, and the red `app-legacy-banner` is an
+> unused **suspect** worth a closer look.
+
 ---
 
 ## Install
