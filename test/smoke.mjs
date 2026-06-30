@@ -5,7 +5,8 @@
  * broken build can never be published.
  */
 import { spawnSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { readFileSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -21,7 +22,7 @@ if (run.status !== 0) {
 
 const dot = run.stdout;
 const summary = run.stderr;
-console.log('smoke: examples/demo-app');
+console.log('smoke: component-graph on examples/demo-app');
 
 // stderr summary, e.g. "app=demo-app  routes=3  page-comps=3  child-comps=3  dual-role=0"
 const num = (k) => Number((summary.match(new RegExp(`${k}=(\\d+)`)) || [])[1]);
@@ -35,6 +36,23 @@ ok(/digraph route_components/.test(dot), 'emits graphviz DOT to stdout');
 ok(/label="\/dashboard"/.test(dot), 'route path /dashboard present');
 ok(/C_DashboardPageComponent -> C_StatCardComponent/.test(dot), 'page→child edge present');
 ok(/COMPOSITION/.test(summary) === false, 'demo-app has no leftover empty routes');
+
+// ---- nav-audit + the --nav-json pipeline ----
+console.log('smoke: nav-audit on examples/demo-app');
+const audit = spawnSync('node', ['nav-audit.mjs', 'examples/demo-app', '--json', 'test/.smoke-orphans.json'], { cwd: root, encoding: 'utf8' });
+ok(audit.status === 1, 'nav-audit exits 1 when an orphan route exists');
+let orphansJson = {};
+try { orphansJson = JSON.parse(readFileSync(join(root, 'test/.smoke-orphans.json'), 'utf8')); } catch { /* asserted below */ }
+rmSync(join(root, 'test/.smoke-orphans.json'), { force: true });
+ok(orphansJson?.summary?.orphans === 1, 'finds exactly 1 orphan route');
+ok(orphansJson?.orphans?.[0]?.path === '/settings', 'the orphan route is /settings');
+ok(orphansJson?.summary?.orphanComponents === 0, 'no fully-unused orphan components');
+
+// component-graph consumes nav-audit's JSON and paints the orphan red
+const piped = spawnSync('node', ['component-graph.mjs', 'examples/demo-app', '--dot', 'test/.smoke.dot', '--nav-json', 'examples/orphan-routes.json'], { cwd: root, encoding: 'utf8' });
+const pipedDot = (() => { try { const d = readFileSync(join(root, 'test/.smoke.dot'), 'utf8'); rmSync(join(root, 'test/.smoke.dot'), { force: true }); return d; } catch { return ''; } })();
+ok(piped.status === 0, 'component-graph accepts --nav-json');
+ok(/orphan route/.test(pipedDot), '--nav-json marks the orphan route red');
 
 if (failed) {
   console.error(`\n${failed} assertion(s) failed`);

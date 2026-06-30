@@ -4,16 +4,19 @@
   "description": "Draw the full hierarchy of a standalone Angular app — app → route → page component → child component — reconstructed from *.routes.ts and @Component imports[] via the TypeScript AST, rendered with graphviz.",
   "type": "module",
   "bin": {
-    "ng-component-graph": "./component-graph.mjs"
+    "ng-component-graph": "./component-graph.mjs",
+    "ng-nav-audit": "./nav-audit.mjs"
   },
   "main": "./component-graph.mjs",
   "files": [
     "component-graph.mjs",
+    "nav-audit.mjs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "graph": "node component-graph.mjs",
+    "audit": "node nav-audit.mjs",
     "test": "node test/smoke.mjs",
     "prepublishOnly": "npm test"
   },

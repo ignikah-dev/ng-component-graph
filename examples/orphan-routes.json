@@ -1,0 +1,6 @@
+{
+  "_comment": "Sample --nav-json input for component-graph.mjs. Produced by `node nav-audit.mjs examples/demo-app --json`. Routes/components listed here are drawn red (orphan: no inbound navigation).",
+  "orphans": [
+    { "path": "/settings", "component": "SettingsPageComponent" }
+  ]
+}

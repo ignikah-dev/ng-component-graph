@@ -13,8 +13,12 @@ edges match what your routes and templates actually wire up.
 - 🧭 Reconstructs the **route tree**: inline `children`, lazy `loadChildren`, `loadComponent`, `component:`, `redirectTo`, and `data.title`
 - 🧩 Expands each page via its standalone `@Component({ imports: [...] })` into child components — **AST-based, not regex**
 - 🟦 Flags **layout shell** routes, 🟧 **dual-role** "page-in-page" components, and ⬚ **external/unresolved** lazy children
-- 🟥 Optionally highlights **orphan routes** (no inbound navigation) from a JSON you supply
+- 🟥 Optionally highlights **orphan routes** (no inbound navigation) — pair it with the bundled [`nav-audit`](#companion-nav-audit) tool
 - 🟢 Zero runtime deps beyond your project's `typescript`; renders with [graphviz](https://graphviz.org)
+
+> **Two tools, one package.** `component-graph` maps *structure*; its companion
+> [`nav-audit`](#companion-nav-audit) maps *reachability* (which routes nothing links to).
+> Pipe one into the other to paint dead routes red.
 
 ![Example app → route → page → component graph](https://raw.githubusercontent.com/ignikah-dev/ng-component-graph/main/docs/example-graph.png)
 
@@ -116,26 +120,51 @@ often a leftover/empty routes file.
 
 ---
 
-## Highlighting orphan routes (`--nav-json`)
+## Companion: `nav-audit`
 
-This tool maps *structure*; it doesn't crawl your `routerLink`s to decide which routes are
-actually reachable. If you have that data (from your own route-audit step), pass it as JSON to
-colour unreachable routes/pages red:
+`component-graph` maps *structure* — it doesn't decide which routes are actually **reachable**.
+The bundled `nav-audit.mjs` does exactly that: it cross-checks "route → component" against every
+navigation target it can find (`routerLink`, `router.navigate` / `navigateByUrl`, sidebar/menu
+`route:` data, shared-layout `get*Route()` methods), then reports:
 
-```json
-{
-  "orphans": [
-    { "path": "/settings", "component": "SettingsPageComponent" }
-  ]
-}
-```
+- **orphan routes** — built and routable, but nothing links to them
+- **orphan components** — not routed, selector never used, class referenced nowhere (dead code)
+- **pages not referenced by any route** — likely a dialog/child, or dead code
 
 ```bash
+node nav-audit.mjs apps/my-app                 # human-readable report (exit 1 if orphan routes)
+node nav-audit.mjs apps/my-app --md report.md  # markdown
+node nav-audit.mjs apps/my-app --json out.json # machine-readable (and the --nav-json input below)
+```
+
+### The pipeline: paint orphan routes red
+
+`nav-audit --json` emits exactly the shape `component-graph --nav-json` consumes, so the two compose:
+
+```bash
+node nav-audit.mjs       apps/my-app --json orphans.json
 node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 ```
 
-Any route whose reconstructed `path` (or whose page `component`) appears in the list is drawn
-red, so dead routes stand out against the rest of the tree.
+Any route whose `path` (or page `component`) is listed as an orphan is drawn red:
+
+![Orphan route highlighted](https://raw.githubusercontent.com/ignikah-dev/ng-component-graph/main/docs/example-graph-orphans.png)
+
+> In the bundled demo, `app-root` links to `/dashboard` and `/orders` but **not** `/settings`,
+> so `nav-audit` flags `/settings` and `component-graph` paints it red. Reproduce:
+> ```bash
+> node nav-audit.mjs       examples/demo-app --json orphans.json
+> node component-graph.mjs examples/demo-app --png docs/example-graph-orphans.png --nav-json orphans.json
+> ```
+
+The `--nav-json` shape, if you'd rather generate it yourself:
+
+```json
+{ "orphans": [ { "path": "/settings", "component": "SettingsPageComponent" } ] }
+```
+
+`nav-audit`'s heuristics (which filenames are sidebars, which names are layout shells) are noted
+at the top of `nav-audit.mjs` — tune them to your conventions.
 
 ---
 
