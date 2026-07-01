@@ -20,7 +20,9 @@
  *   - external/unresolved lazy children — a `loadChildren` whose route export
  *                        can't be found in this app (dashed grey).
  *   - empty / never-loaded route exports — exported `Routes` arrays that nothing
- *                        ever `loadChildren`s (reported on stderr).
+ *                        ever `loadChildren`s (reported on stderr). Route exports that
+ *                        live in a shared lib (extra root / monorepo `libs/`) are
+ *                        excluded — a shared lib's routes may be loaded by another app.
  *   - orphan routes    — optional: pass --nav-json to colour routes/pages that
  *                        have no inbound navigation red (see README for shape).
  *
@@ -217,6 +219,12 @@ if (app) walkRoutes(app.routes, '', rootId);
 // emptyChildExports now = route exports that are never loadChildren'd (and not the root)
 emptyChildExports.delete('appRoutes');
 if (app) { for (const [name, v] of routeExports) if (v === app) emptyChildExports.delete(name); }
+// route exports living in a shared lib (extra root / monorepo `libs/`) are NOT per-app orphans:
+// a shared lib's routes are meant to be reused, and may be loadChildren'd by a *different* app
+// than the one being graphed — so scanning them here as an extra root must not flag them.
+if (extraRoots.length) for (const [name, v] of routeExports) {
+  if (v.file && extraRoots.some((r) => v.file === r || v.file.startsWith(r + '/'))) emptyChildExports.delete(name);
+}
 const emptyRouteFiles = [...emptyChildExports].map((n) => ({ name: n, file: routeExports.get(n)?.file, count: routeExports.get(n)?.routes.length ?? 0 }));
 
 // ---------- dual-role detection: a route-target component that is ALSO someone's child ----------
