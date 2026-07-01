@@ -327,12 +327,23 @@ function buildHtmlTree() {
 
 function htmlDoc() {
   const tree = buildHtmlTree();
-  // components parsed but never reached from any route page — surfaced as a flat list
+  // components parsed but never reached from any route page — surfaced as a table,
+  // classified by whether they live under a monorepo `libs/` or an `apps/` (or the app itself)
   const referenced = new Set(compNodes);
-  const unused = components.map((c) => c.className).filter((c) => !referenced.has(c)).sort();
+  const classify = (file) => {
+    const norm = file.replace(/\\/g, '/');
+    let i = norm.lastIndexOf('/libs/'); if (i >= 0) return { source: 'libs', path: norm.slice(i + 1) };
+    i = norm.lastIndexOf('/apps/');    if (i >= 0) return { source: 'apps', path: norm.slice(i + 1) };
+    return { source: 'app', path: norm.split('/').slice(-3).join('/') };
+  };
+  const unused = components
+    .filter((c) => !referenced.has(c.className))
+    .map((c) => { const { source, path } = classify(c.file); return { className: c.className, selector: c.selector || '', source, path }; })
+    .sort((a, b) => (a.source === b.source ? a.path.localeCompare(b.path) : a.source.localeCompare(b.source)));
+  const unusedBySource = {}; for (const u of unused) unusedBySource[u.source] = (unusedBySource[u.source] || 0) + 1;
   const data = {
     app: appName,
-    summary: { routes: routeNodes.length - 1, pages: routeTargets.size, children: compNodes.size - routeTargets.size, dual: dualRole.size, unused: unused.length },
+    summary: { routes: routeNodes.length - 1, pages: routeTargets.size, children: compNodes.size - routeTargets.size, dual: dualRole.size, unused: unused.length, unusedBySource },
     roots: extraRoots,
     tree, unused,
   };
@@ -382,7 +393,16 @@ function htmlDoc() {
   .role-route > .row .name, .role-page-route > .row .name { color: var(--route); }
   .ref { color: #999; font-style: italic; }
   .unused { margin-top: 28px; padding-top: 16px; border-top: 1px solid #d0d7de; }
-  .unused h2 { font-size: 14px; } .unused code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; margin: 2px; display: inline-block; }
+  .unused h2 { font-size: 14px; margin: 0 0 4px; }
+  .unused h2 .counts { font-weight: 400; margin-left: 6px; }
+  .unused-tbl { border-collapse: collapse; width: 100%; max-width: 960px; margin-top: 10px; font-size: 13px; }
+  .unused-tbl th, .unused-tbl td { text-align: left; padding: 5px 12px 5px 4px; border-bottom: 1px solid #eaecef; vertical-align: top; }
+  .unused-tbl th { color: #656d76; font-weight: 600; border-bottom: 2px solid #d0d7de; white-space: nowrap; }
+  .unused-tbl code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+  .unused-tbl .sel { color: #656d76; }
+  .unused-tbl .loc { color: #656d76; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+  .src { font-size: 10px; padding: 1px 7px; border-radius: 8px; border: 1px solid currentColor; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .src-libs { color: #8250df; } .src-apps { color: #0969da; } .src-app { color: #656d76; }
 </style>
 </head>
 <body>
@@ -459,11 +479,24 @@ function render(node, parent) {
 }
 render(DATA.tree, tree);
 
-// unused components
+// unused components — table split by libs / apps source
 if (DATA.unused.length) {
+  const bs = DATA.summary.unusedBySource || {};
+  const counts = Object.keys(bs).sort().map(s => s + ': ' + bs[s]).join(' · ');
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const rows = DATA.unused.map(u => {
+    const hay = (u.className + ' ' + u.selector + ' ' + u.path).toLowerCase();
+    return '<tr data-hay="' + esc(hay) + '">' +
+      '<td><code>' + esc(u.className) + '</code></td>' +
+      '<td class="sel">' + (u.selector ? esc(u.selector) : '—') + '</td>' +
+      '<td><span class="src src-' + u.source + '">' + u.source + '</span></td>' +
+      '<td class="loc">' + esc(u.path) + '</td></tr>';
+  }).join('');
   document.getElementById('unusedBox').innerHTML =
-    '<h2>Parsed but never referenced by a route page (' + DATA.unused.length + ')</h2>' +
-    DATA.unused.map(c => '<code>' + c + '</code>').join('');
+    '<h2>Parsed but never referenced by a route page (' + DATA.unused.length + ')' +
+    '<span class="counts tag">' + counts + '</span></h2>' +
+    '<table class="unused-tbl"><thead><tr><th>Component</th><th>Selector</th><th>Source</th><th>Location</th></tr></thead>' +
+    '<tbody id="unusedRows">' + rows + '</tbody></table>';
 }
 
 // counts
@@ -484,8 +517,12 @@ function mark(li, term) {
   if (i >= 0) n.innerHTML = txt.slice(0, i) + '<mark>' + txt.slice(i, i + term.length) + '</mark>' + txt.slice(i + term.length);
   else n.textContent = txt;
 }
+function filterTable(term) {
+  document.querySelectorAll('#unusedRows tr').forEach(tr => { tr.style.display = (!term || tr.dataset.hay.includes(term)) ? '' : 'none'; });
+}
 function filter(term) {
   term = term.trim().toLowerCase();
+  filterTable(term);
   const all = tree.querySelectorAll('li');
   if (!term) { all.forEach(li => { li.classList.remove('hidden'); clearMarks(li); }); return; }
   // a li is visible if it matches or any descendant matches; ancestors of a match are shown + expanded
