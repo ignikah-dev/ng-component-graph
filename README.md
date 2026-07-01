@@ -81,22 +81,23 @@ print a version). Both `apps\my-app` and `apps/my-app` work as the argument.
 ## Usage
 
 ```bash
-# DOT to stdout + summary to stderr (no graphviz needed)
+# DEFAULT: writes a self-contained, searchable HTML tree to <app>.component-graph.html
+# (no graphviz needed) and auto-detects a sibling libs/ folder to scan.
 node component-graph.mjs apps/my-app
+
+# Choose the HTML output path explicitly
+node component-graph.mjs apps/my-app --html graph.html
 
 # Rendered image (needs graphviz)
 node component-graph.mjs apps/my-app --svg graph.svg
 node component-graph.mjs apps/my-app --png graph.png
 
-# Raw graphviz DOT to a file (style it yourself)
+# Raw graphviz DOT — to a file, or `-` to stream to stdout for piping
 node component-graph.mjs apps/my-app --dot graph.dot
+node component-graph.mjs apps/my-app --dot - | dot -Tsvg > graph.svg
 
-# Interactive HTML — indented, collapsible tree with a live search box (no graphviz)
-node component-graph.mjs apps/my-app --html graph.html
-
-# Also scan a monorepo's shared libraries for components
-node component-graph.mjs apps/my-app --html graph.html --libs libs/
-node component-graph.mjs apps/my-app --libs libs/ui,libs/shared   # multiple roots
+# Point at specific shared-library roots (overrides libs/ auto-detection)
+node component-graph.mjs apps/my-app --libs libs/ui,libs/shared
 
 # Highlight orphan routes in red (see below)
 node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
@@ -105,6 +106,10 @@ node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 The argument can be the app directory (`apps/my-app`), its `src`, or its `src/app` — the tool
 finds the source root and the app's root `Routes` (`appRoutes`, or the array exported from
 `app.routes.ts`) itself.
+
+> **Defaults:** with no format flag the tool writes **HTML** (the searchable tree) and **scans
+> `libs/`** automatically. Reach for `--dot` / `--svg` / `--png` when you want a graphviz graph,
+> and `--libs` only to override where shared components are found.
 
 ### `--html` — searchable indented tree
 

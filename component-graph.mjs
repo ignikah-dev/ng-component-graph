@@ -30,14 +30,16 @@
  *                                      [--libs libs/ | libs/a,libs/b]
  *   (--svg/--png require graphviz: `brew install graphviz` / `apt install graphviz`)
  *
- * --html emits a self-contained, dependency-free page: the same hierarchy as an
- * indented, collapsible tree with a live search box (no graphviz needed).
+ * DEFAULT: with no format flag, a self-contained, dependency-free HTML page is
+ * written to `<app>.component-graph.html` — the same hierarchy as an indented,
+ * collapsible tree with a live search box (no graphviz needed). Pass --html to
+ * choose the path, or --dot/--svg/--png for the graphviz formats instead.
  * --libs adds extra roots (e.g. a monorepo's `libs/`) to the component scan so
  * `imports: [...]` edges resolve into shared libraries; if omitted, a sibling
- * `libs/` folder is auto-detected by walking up from the app dir.
+ * `libs/` folder is auto-detected by walking up from the app dir (always on).
  *
- * With no --png/--svg/--dot/--html, the graphviz DOT source is written to stdout
- * and a one-line summary to stderr.
+ * A one-line summary is always written to stderr. Use `--dot -` to stream the
+ * graphviz DOT source to stdout (e.g. `… --dot - | dot -Tsvg > graph.svg`).
  *
  * License: MIT
  */
@@ -54,8 +56,10 @@ const argv = process.argv.slice(2);
 const pos = argv.filter((a) => !a.startsWith('--'));
 const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
 const input = pos[0];
-if (!input) { console.error('Usage: node component-graph.mjs <app-dir> [--png out] [--svg out] [--dot out] [--html out.html] [--nav-json orphans.json] [--libs dir1,dir2]'); process.exit(2); }
-const pngOut = flag('--png'), svgOut = flag('--svg'), dotOut = flag('--dot'), htmlOut = flag('--html');
+if (!input) { console.error('Usage: node component-graph.mjs <app-dir> [--html out.html] [--png out] [--svg out] [--dot out] [--nav-json orphans.json] [--libs dir1,dir2]\n(no format flag → writes <app>.component-graph.html; libs/ is auto-detected)'); process.exit(2); }
+const pngOut = flag('--png'), svgOut = flag('--svg'), dotOut = flag('--dot');
+const hasHtmlFlag = argv.includes('--html');
+let htmlOut = flag('--html'); if (htmlOut && htmlOut.startsWith('--')) htmlOut = null; // '--html' with no path → default filename
 const navJson = flag('--nav-json');   // optional: JSON listing orphan routes → colour them red
 const libsFlag = flag('--libs');      // optional: comma-separated extra roots to scan for components (monorepo libs/)
 
@@ -546,12 +550,15 @@ document.getElementById('collapse').addEventListener('click', () => tree.querySe
 }
 
 const dotSrc = dot();
-if (htmlOut) { writeFileSync(resolve(process.cwd(), htmlOut), htmlDoc()); console.log('HTML written: ' + htmlOut); }
-if (dotOut) { writeFileSync(resolve(process.cwd(), dotOut), dotSrc); console.log('DOT written: ' + dotOut); }
+// Default output is the self-contained HTML tree — write it whenever no explicit format
+// flag is given (or when --html is passed). A default filename is used if --html has no path.
+const wantHtml = hasHtmlFlag || (!dotOut && !svgOut && !pngOut);
+const htmlTarget = wantHtml ? resolve(process.cwd(), htmlOut || `${appName}.component-graph.html`) : null;
+if (htmlTarget) { writeFileSync(htmlTarget, htmlDoc()); console.log('HTML written: ' + htmlTarget); }
+if (dotOut) { writeFileSync(resolve(process.cwd(), dotOut === '-' ? '/dev/stdout' : dotOut), dotSrc); if (dotOut !== '-') console.log('DOT written: ' + dotOut); }
 function render(fmt, out) { try { execFileSync('dot', ['-T' + fmt, '-o', resolve(process.cwd(), out)], { input: dotSrc }); console.log(`${fmt.toUpperCase()} written: ${out}`); } catch (e) { console.error(`Failed to render ${fmt} (is graphviz installed?): ${e.message}`); process.exitCode = 1; } }
 if (svgOut) render('svg', svgOut);
 if (pngOut) render('png', pngOut);
-if (!dotOut && !svgOut && !pngOut && !htmlOut) console.log(dotSrc); // default: DOT to stdout
 
 console.error(`app=${appName}  routes=${routeNodes.length - 1}  page-comps=${routeTargets.size}  child-comps=${compNodes.size - routeTargets.size}  dual-role=${dualRole.size}`);
 if (dualRole.size) console.error('dual-role (route page also embedded as a child): ' + [...dualRole].join(', '));

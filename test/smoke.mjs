@@ -10,7 +10,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const run = spawnSync('node', ['component-graph.mjs', 'examples/demo-app'], { cwd: root, encoding: 'utf8' });
+// default output is now HTML; `--dot -` streams the DOT source to stdout for these assertions
+const run = spawnSync('node', ['component-graph.mjs', 'examples/demo-app', '--dot', '-'], { cwd: root, encoding: 'utf8' });
 
 let failed = 0;
 const ok = (cond, msg) => { if (cond) { console.log(`  ✓ ${msg}`); } else { console.error(`  ✗ ${msg}`); failed++; } };
@@ -32,10 +33,18 @@ ok(num('child-comps') === 3, 'finds 3 child components');
 ok(num('dual-role') === 0, 'no dual-role components');
 
 // DOT shape
-ok(/digraph route_components/.test(dot), 'emits graphviz DOT to stdout');
+ok(/digraph route_components/.test(dot), 'emits graphviz DOT to stdout with --dot -');
 ok(/label="\/dashboard"/.test(dot), 'route path /dashboard present');
 ok(/C_DashboardPageComponent -> C_StatCardComponent/.test(dot), 'page→child edge present');
 ok(/COMPOSITION/.test(summary) === false, 'demo-app has no leftover empty routes');
+
+// ---- default output is HTML ----
+console.log('smoke: component-graph default output (no flag) on examples/demo-app');
+const defRun = spawnSync('node', ['component-graph.mjs', 'examples/demo-app'], { cwd: root, encoding: 'utf8' });
+ok(defRun.status === 0, 'runs with no format flag');
+ok(/HTML written:.*demo-app\.component-graph\.html/.test(defRun.stdout), 'defaults to writing <app>.component-graph.html');
+ok(!/digraph/.test(defRun.stdout), 'no DOT is emitted to stdout by default');
+rmSync(join(root, 'demo-app.component-graph.html'), { force: true });
 
 // ---- --html output ----
 console.log('smoke: component-graph --html on examples/demo-app');
