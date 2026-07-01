@@ -112,13 +112,118 @@ function lineOf(sf, node) {
   return sf.getLineAndCharacterOfPosition(node.getStart()).line + 1;
 }
 
-// resolve an import specifier → absolute .ts file
-function resolveImport(fromFile, spec) {
-  if (!spec.startsWith('.')) return null; // only follow relative imports (within the app)
-  let base = resolve(dirname(fromFile), spec);
-  const cands = [base + '.ts', join(base, 'index.ts'), base];
-  for (const c of cands) if (existsSync(c) && statSync(c).isFile()) return c;
+// tsconfig `compilerOptions.paths` aliases (e.g. `@app/*`, `@myorg/ui`) so that
+// `component: X` / `loadComponent` imports written against a path alias still
+// resolve to a real file (not just relative `./x` imports). Parsed with the TS
+// config reader so `extends` + comments are handled.
+function loadTsAliases() {
+  const aliases = [];
+  const seen = new Set();
+  for (const r of [appDir, dirname(appDir), process.cwd()]) {
+    for (const name of ['tsconfig.json', 'tsconfig.base.json', 'tsconfig.app.json']) {
+      const file = join(r, name);
+      if (!existsSync(file) || seen.has(file)) continue;
+      seen.add(file);
+      try {
+        const read = ts.readConfigFile(file, ts.sys.readFile);
+        if (read.error || !read.config) continue;
+        const { options } = ts.parseJsonConfigFileContent(read.config, ts.sys, r);
+        const paths = options.paths;
+        if (!paths) continue;
+        const base = options.baseUrl || r;
+        for (const [key, arr] of Object.entries(paths)) {
+          if (!Array.isArray(arr) || !arr.length) continue;
+          const wild = key.endsWith('/*');
+          aliases.push({
+            key, wild,
+            prefix: wild ? key.slice(0, -2) : key,
+            targets: arr.map((t) => resolve(base, wild ? t.replace(/\/\*$/, '') : t)),
+          });
+        }
+      } catch { /* ignore malformed tsconfig */ }
+    }
+  }
+  return aliases;
+}
+const tsAliases = loadTsAliases();
+
+// a module base path (no extension) → the actual .ts file it maps to
+function firstExistingModule(base) {
+  for (const c of [base + '.ts', join(base, 'index.ts'), base])
+    if (existsSync(c) && statSync(c).isFile()) return c;
   return null;
+}
+
+// resolve a non-relative specifier through tsconfig path aliases → .ts file
+function resolveAlias(spec) {
+  for (const a of tsAliases) {
+    if (a.wild) {
+      if (spec === a.prefix || spec.startsWith(a.prefix + '/')) {
+        const rest = spec.slice(a.prefix.length).replace(/^\//, '');
+        for (const t of a.targets) { const f = firstExistingModule(rest ? join(t, rest) : t); if (f) return f; }
+      }
+    } else if (spec === a.key) {
+      for (const t of a.targets) { const f = firstExistingModule(t); if (f) return f; }
+    }
+  }
+  return null;
+}
+
+// resolve an import specifier → absolute .ts file (relative path or tsconfig alias)
+function resolveImport(fromFile, spec) {
+  if (spec.startsWith('.')) return firstExistingModule(resolve(dirname(fromFile), spec));
+  return resolveAlias(spec); // path alias (@app/…); bare node_modules specifiers → null
+}
+
+// does this file export a top-level declaration named `symbol`?
+function fileDeclaresExport(sf, symbol) {
+  for (const st of sf.statements) {
+    if (!st.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if ((ts.isClassDeclaration(st) || ts.isFunctionDeclaration(st) ||
+         ts.isInterfaceDeclaration(st) || ts.isEnumDeclaration(st)) &&
+        st.name && st.name.text === symbol) return true;
+    if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations)
+        if (ts.isIdentifier(d.name) && d.name.text === symbol) return true;
+    }
+  }
+  return false;
+}
+
+// follow barrel re-exports (`export { X } from './y'`, `export * from './y'`)
+// to the file that actually declares `symbol`; null if not found on this chain
+function findDecl(file, symbol, visited) {
+  const key = file + '|' + symbol;
+  if (!file || !symbol || visited.has(key) || visited.size > 64) return null;
+  visited.add(key);
+  const sf = parse(file);
+  if (!sf) return null;
+  if (fileDeclaresExport(sf, symbol)) return file;
+  for (const st of sf.statements) {
+    if (!ts.isExportDeclaration(st) || !st.moduleSpecifier || !ts.isStringLiteral(st.moduleSpecifier)) continue;
+    const tgt = resolveImport(file, st.moduleSpecifier.text);
+    if (!tgt) continue;
+    if (st.exportClause && ts.isNamedExports(st.exportClause)) {
+      for (const el of st.exportClause.elements) {
+        if (el.name.text !== symbol) continue;
+        const orig = el.propertyName ? el.propertyName.text : el.name.text; // `export { A as symbol }`
+        const r = findDecl(tgt, orig, visited);
+        if (r) return r;
+      }
+    } else if (!st.exportClause) { // export * from './y'
+      const r = findDecl(tgt, symbol, visited);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+// resolve `spec` to a module, then chase barrels so we land on the file that
+// declares `symbol` (falls back to the module file if the chain can't be traced)
+function resolveSymbolFile(fromFile, spec, symbol) {
+  const mod = resolveImport(fromFile, spec);
+  if (!mod || !symbol) return mod;
+  return findDecl(mod, symbol, new Set()) || mod;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +340,7 @@ function parseRouteArray(arrayNode, sf, file, parentSegs, importNameMap) {
       const lazy = parseLazyImport(lcProp.initializer);
       if (lazy) {
         node.component = lazy.name;
-        node.componentFile = resolveImport(file, lazy.spec);
+        node.componentFile = resolveSymbolFile(file, lazy.spec, lazy.name);
       }
     }
 
@@ -253,7 +358,7 @@ function parseRouteArray(arrayNode, sf, file, parentSegs, importNameMap) {
     if (lchProp && ts.isPropertyAssignment(lchProp)) {
       const lazy = parseLazyImport(lchProp.initializer);
       if (lazy) {
-        const childFile = resolveImport(file, lazy.spec);
+        const childFile = resolveSymbolFile(file, lazy.spec, lazy.name);
         if (childFile) {
           const childSf = parse(childFile);
           if (childSf) {
@@ -278,7 +383,10 @@ function buildImportNameMap(sf, file) {
       if (!resolved) continue;
       const nb = stmt.importClause.namedBindings;
       if (nb && ts.isNamedImports(nb)) {
-        for (const e of nb.elements) m.set(e.name.text, resolved);
+        for (const e of nb.elements) {
+          const orig = e.propertyName ? e.propertyName.text : e.name.text; // `import { A as X }`
+          m.set(e.name.text, findDecl(resolved, orig, new Set()) || resolved);
+        }
       }
     }
   }

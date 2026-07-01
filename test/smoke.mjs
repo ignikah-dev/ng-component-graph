@@ -72,6 +72,21 @@ const pipedDot = (() => { try { const d = readFileSync(join(root, 'test/.smoke.d
 ok(piped.status === 0, 'component-graph accepts --nav-json');
 ok(/orphan route/.test(pipedDot), '--nav-json marks the orphan route red');
 
+// ---- nav-audit resolves `component: X` through tsconfig aliases + barrel re-exports ----
+// fixture: a fallback `component: HomePageComponent` imported via `@app/pages/home`
+// (a path alias) that re-exports from an index.ts barrel — must land on the real
+// component file, not the barrel, so the page is not mis-flagged as unrouted.
+console.log('smoke: nav-audit alias + barrel resolution on test/fixtures/alias-app');
+const aliasAudit = spawnSync('node', ['nav-audit.mjs', 'test/fixtures/alias-app', '--json', 'test/.smoke-alias.json'], { cwd: root, encoding: 'utf8' });
+let aliasJson = {};
+try { aliasJson = JSON.parse(readFileSync(join(root, 'test/.smoke-alias.json'), 'utf8')); } catch { /* asserted below */ }
+rmSync(join(root, 'test/.smoke-alias.json'), { force: true });
+ok(aliasAudit.status === 0, 'alias-app has no orphan routes (both pages reachable)');
+ok(aliasJson?.summary?.notRoutedPages === 0, 'barrel/alias `component: X` counts the page as routed');
+ok(aliasJson?.summary?.orphanComponents === 0, 'barrel/alias fallback page is not flagged as dead code');
+const homeEntry = (aliasJson?.reachable || []).find(r => r.component === 'HomePageComponent');
+ok(!!homeEntry, 'the alias+barrel fallback page (HomePageComponent) is reachable');
+
 if (failed) {
   console.error(`\n${failed} assertion(s) failed`);
   process.exit(1);
