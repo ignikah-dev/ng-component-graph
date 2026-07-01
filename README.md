@@ -183,6 +183,12 @@ navigation target it can find (`routerLink`, `router.navigate` / `navigateByUrl`
 - **orphan components** — not routed, selector never used, class referenced nowhere (dead code)
 - **pages not referenced by any route** — likely a dialog/child, or dead code
 
+Component files are resolved through **tsconfig path aliases** (`@app/*`, `@myorg/ui`, …, read from
+`tsconfig.json` / `tsconfig.base.json` / `tsconfig.app.json`, `extends` followed) and **`index.ts`
+barrel re-exports** (`export { X } from './x'`, `export * from './x'`). So a fallback
+`component: X` — or a lazy `loadComponent` / `loadChildren` — imported via an alias or a barrel
+resolves to the component's own file instead of being mis-flagged as unrouted.
+
 ```bash
 node nav-audit.mjs apps/my-app                 # human-readable report (exit 1 if orphan routes)
 node nav-audit.mjs apps/my-app --md report.md  # markdown
