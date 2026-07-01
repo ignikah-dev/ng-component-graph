@@ -1,6 +1,9 @@
 node_modules/
 *.log
 
+# editor / IDE
+.idea/
+
 # generated graph artifacts
 *.svg
 *.png
