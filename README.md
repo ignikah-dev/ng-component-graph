@@ -18,6 +18,8 @@ edges match what your routes and templates actually wire up.
 - 🧩 Expands each page via its standalone `@Component({ imports: [...] })` into child components — **AST-based, not regex**
 - 🟦 Flags **layout shell** routes, 🟧 **dual-role** "page-in-page" components, and ⬚ **external/unresolved** lazy children
 - 🟥 Optionally highlights **orphan routes** (no inbound navigation) — pair it with the bundled [`nav-audit`](#companion-nav-audit) tool
+- 🌳 Emits a **self-contained, searchable HTML tree** ([`--html`](#--html--searchable-indented-tree)) — indented, collapsible, live-filtered, no graphviz required
+- 📚 Scans a monorepo's shared libraries ([`--libs`](#--libs--monorepo-shared-libraries)) so `imports[]` edges resolve into `libs/` — sibling `libs/` **auto-detected**
 - 🟢 Zero runtime deps beyond your project's `typescript`; renders with [graphviz](https://graphviz.org)
 
 > **Two tools, one package.** `component-graph` maps *structure*; its companion
