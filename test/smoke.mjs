@@ -37,6 +37,15 @@ ok(/label="\/dashboard"/.test(dot), 'route path /dashboard present');
 ok(/C_DashboardPageComponent -> C_StatCardComponent/.test(dot), 'page→child edge present');
 ok(/COMPOSITION/.test(summary) === false, 'demo-app has no leftover empty routes');
 
+// ---- --html output ----
+console.log('smoke: component-graph --html on examples/demo-app');
+const htmlRun = spawnSync('node', ['component-graph.mjs', 'examples/demo-app', '--html', 'test/.smoke.html'], { cwd: root, encoding: 'utf8' });
+const html = (() => { try { const h = readFileSync(join(root, 'test/.smoke.html'), 'utf8'); rmSync(join(root, 'test/.smoke.html'), { force: true }); return h; } catch { return ''; } })();
+ok(htmlRun.status === 0, 'component-graph accepts --html');
+ok(/<input id="q"/.test(html), '--html emits a search box');
+ok(/const DATA = \{/.test(html), '--html embeds the tree data');
+ok(/DashboardPageComponent/.test(html) && /app-stat-card/.test(html), '--html tree includes pages and child selectors');
+
 // ---- nav-audit + the --nav-json pipeline ----
 console.log('smoke: nav-audit on examples/demo-app');
 const audit = spawnSync('node', ['nav-audit.mjs', 'examples/demo-app', '--json', 'test/.smoke-orphans.json'], { cwd: root, encoding: 'utf8' });

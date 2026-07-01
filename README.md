@@ -89,6 +89,13 @@ node component-graph.mjs apps/my-app --png graph.png
 # Raw graphviz DOT to a file (style it yourself)
 node component-graph.mjs apps/my-app --dot graph.dot
 
+# Interactive HTML — indented, collapsible tree with a live search box (no graphviz)
+node component-graph.mjs apps/my-app --html graph.html
+
+# Also scan a monorepo's shared libraries for components
+node component-graph.mjs apps/my-app --html graph.html --libs libs/
+node component-graph.mjs apps/my-app --libs libs/ui,libs/shared   # multiple roots
+
 # Highlight orphan routes in red (see below)
 node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 ```
@@ -96,6 +103,24 @@ node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 The argument can be the app directory (`apps/my-app`), its `src`, or its `src/app` — the tool
 finds the source root and the app's root `Routes` (`appRoutes`, or the array exported from
 `app.routes.ts`) itself.
+
+### `--html` — searchable indented tree
+
+`--html out.html` writes a **self-contained, dependency-free page** (no graphviz, no network)
+that renders the same `app → route → page → component` hierarchy as an **indented, collapsible
+tree** with a **live search box**. Typing filters nodes by name, selector, path, or class —
+matches are highlighted and their ancestors stay expanded. Roles are colour-coded (page / child
+/ layout shell / page-in-page / orphan), and components that were parsed but never reached from
+any route page are listed separately at the bottom. Feed it `--nav-json` too and orphan routes
+render red, just like the graph.
+
+### `--libs` — monorepo shared libraries
+
+Standalone components often live in shared libraries (Nx `libs/`, or any folder outside the app).
+Point `--libs` at one or more roots (comma-separated) and their `*.component.ts` and `*.routes.ts`
+files join the scan, so `@Component({ imports: [...] })` edges resolve into those libraries and
+lazy `loadChildren` targets defined there stop showing as *external/unresolved*. With `--libs`
+omitted, a sibling `libs/` folder is **auto-detected** by walking up from the app directory.
 
 ### Example summary (stderr)
 
