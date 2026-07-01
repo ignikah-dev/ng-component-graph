@@ -26,11 +26,18 @@
  *
  * Usage:
  *   node component-graph.mjs <app-dir> [--png out.png] [--svg out.svg] [--dot out.dot]
- *                                      [--nav-json orphans.json]
+ *                                      [--html out.html] [--nav-json orphans.json]
+ *                                      [--libs libs/ | libs/a,libs/b]
  *   (--svg/--png require graphviz: `brew install graphviz` / `apt install graphviz`)
  *
- * With no --png/--svg/--dot, the graphviz DOT source is written to stdout and a
- * one-line summary to stderr.
+ * --html emits a self-contained, dependency-free page: the same hierarchy as an
+ * indented, collapsible tree with a live search box (no graphviz needed).
+ * --libs adds extra roots (e.g. a monorepo's `libs/`) to the component scan so
+ * `imports: [...]` edges resolve into shared libraries; if omitted, a sibling
+ * `libs/` folder is auto-detected by walking up from the app dir.
+ *
+ * With no --png/--svg/--dot/--html, the graphviz DOT source is written to stdout
+ * and a one-line summary to stderr.
  *
  * License: MIT
  */
@@ -47,9 +54,10 @@ const argv = process.argv.slice(2);
 const pos = argv.filter((a) => !a.startsWith('--'));
 const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
 const input = pos[0];
-if (!input) { console.error('Usage: node component-graph.mjs <app-dir> [--png out] [--svg out] [--dot out] [--nav-json orphans.json]'); process.exit(2); }
-const pngOut = flag('--png'), svgOut = flag('--svg'), dotOut = flag('--dot');
+if (!input) { console.error('Usage: node component-graph.mjs <app-dir> [--png out] [--svg out] [--dot out] [--html out.html] [--nav-json orphans.json] [--libs dir1,dir2]'); process.exit(2); }
+const pngOut = flag('--png'), svgOut = flag('--svg'), dotOut = flag('--dot'), htmlOut = flag('--html');
 const navJson = flag('--nav-json');   // optional: JSON listing orphan routes → colour them red
+const libsFlag = flag('--libs');      // optional: comma-separated extra roots to scan for components (monorepo libs/)
 
 // Orphan routes (defined but nothing navigates to them). Shape:
 //   { "orphans": [ { "path": "/settings", "component": "SettingsPageComponent" }, ... ] }
@@ -67,6 +75,23 @@ else if (existsSync(join(srcDir, 'app'))) srcDir = join(srcDir, 'app');
 if (!existsSync(srcDir)) { console.error(`Source directory not found: ${srcDir}`); process.exit(2); }
 const appName = input.replace(/\/+$/, '').split('/').filter(Boolean).pop();
 
+// ---------- extra component roots (monorepo libs/) ----------
+// Components in a standalone app are often published from sibling libraries (Nx `libs/`,
+// or any shared folder). Scan those too so `imports: [...]` edges resolve into them.
+const extraRoots = [];
+if (libsFlag) {
+  for (const p of libsFlag.split(',')) { const rp = resolve(process.cwd(), p.trim()); if (existsSync(rp)) extraRoots.push(rp); else console.error(`--libs path not found (skipped): ${rp}`); }
+} else {
+  // auto-detect: walk up from the app dir looking for a sibling `libs/` folder
+  let dir = srcDir;
+  for (let i = 0; i < 8; i++) {
+    const cand = join(dir, 'libs');
+    if (existsSync(cand) && !srcDir.startsWith(cand)) { extraRoots.push(cand); break; }
+    const parent = resolve(dir, '..');
+    if (parent === dir) break; dir = parent;
+  }
+}
+
 // ---------- walk ----------
 function walk(dir, out = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -76,7 +101,10 @@ function walk(dir, out = []) {
   }
   return out;
 }
-const allFiles = walk(srcDir);
+const seenFiles = new Set();
+const allFiles = [];
+for (const root of [srcDir, ...extraRoots]) for (const f of walk(root)) if (!seenFiles.has(f)) { seenFiles.add(f); allFiles.push(f); }
+if (extraRoots.length) console.error(`scanning extra roots for components: ${extraRoots.join(', ')}`);
 const routeFiles = allFiles.filter((f) => /\.routes\.ts$/.test(f));
 const componentFiles = allFiles.filter((f) => /\.component\.ts$/.test(f) && !/\.spec\.ts$/.test(f));
 
@@ -260,12 +288,270 @@ function dot() {
   return L.join('\n');
 }
 
+// ---------- HTML: indented, collapsible, searchable tree ----------
+// Same model as the DOT graph (app → route tree → page → child…), but rendered as a
+// nested tree with a live search box. Components form a DAG, so repeated nodes are shown
+// once-expanded and thereafter marked as a reference (↩) to avoid infinite recursion.
+function buildHtmlTree() {
+  const childrenOf = new Map();
+  for (const [a, b] of routeTreeEdges) { if (!childrenOf.has(a)) childrenOf.set(a, []); childrenOf.get(a).push(b); }
+  const routeById = new Map(routeNodes.map((n) => [n.id, n]));
+  const pageOf = new Map(); for (const [r, c] of route2page) pageOf.set(r, c);
+
+  function compNode(cls, seen) {
+    const cc = byClass.get(cls);
+    const node = {
+      type: 'comp', label: cc?.selector || cls, className: cls,
+      role: orphanComps.has(cls) ? 'orphan' : dualRole.has(cls) ? 'dual' : routeTargets.has(cls) ? 'page' : 'child',
+      children: [],
+    };
+    if (seen.has(cls)) { node.ref = true; return node; }
+    const seen2 = new Set(seen); seen2.add(cls);
+    for (const k of childEdges.get(cls) || []) node.children.push(compNode(k, seen2));
+    return node;
+  }
+  function routeNode(id) {
+    const n = routeById.get(id);
+    const node = {
+      type: n.kind === 'root' ? 'root' : 'route',
+      label: n.path, title: n.title || null, comp: n.comp || null,
+      role: orphanPaths.has(n.path) ? 'orphan-route' : n.kind, children: [],
+    };
+    for (const cid of childrenOf.get(id) || []) node.children.push(routeNode(cid));
+    const page = pageOf.get(id);
+    if (page && byClass.has(page)) node.children.push(compNode(page, new Set()));
+    return node;
+  }
+  return routeNode(rootId);
+}
+
+function htmlDoc() {
+  const tree = buildHtmlTree();
+  // components parsed but never reached from any route page — surfaced as a table,
+  // classified by whether they live under a monorepo `libs/` or an `apps/` (or the app itself)
+  const referenced = new Set(compNodes);
+  const classify = (file) => {
+    const norm = file.replace(/\\/g, '/');
+    let i = norm.lastIndexOf('/libs/'); if (i >= 0) return { source: 'libs', path: norm.slice(i + 1) };
+    i = norm.lastIndexOf('/apps/');    if (i >= 0) return { source: 'apps', path: norm.slice(i + 1) };
+    return { source: 'app', path: norm.split('/').slice(-3).join('/') };
+  };
+  const unused = components
+    .filter((c) => !referenced.has(c.className))
+    .map((c) => { const { source, path } = classify(c.file); return { className: c.className, selector: c.selector || '', source, path }; })
+    .sort((a, b) => (a.source === b.source ? a.path.localeCompare(b.path) : a.source.localeCompare(b.source)));
+  const unusedBySource = {}; for (const u of unused) unusedBySource[u.source] = (unusedBySource[u.source] || 0) + 1;
+  const data = {
+    app: appName,
+    summary: { routes: routeNodes.length - 1, pages: routeTargets.size, children: compNodes.size - routeTargets.size, dual: dualRole.size, unused: unused.length, unusedBySource },
+    roots: extraRoots,
+    tree, unused,
+  };
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${appName} — component tree</title>
+<style>
+  :root { --page:#1a7f37; --child:#666; --shell:#1d4ed8; --route:#d39e00; --dual:#d39e00; --orphan:#d62828; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; color: #1f2328; background: #f6f8fa; }
+  header { position: sticky; top: 0; z-index: 10; background: #fff; border-bottom: 1px solid #d0d7de; padding: 12px 20px; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  h1 .sub { font-weight: 400; color: #656d76; font-size: 13px; }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #q { flex: 1; min-width: 200px; padding: 7px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 14px; }
+  button { padding: 6px 10px; border: 1px solid #d0d7de; border-radius: 6px; background: #f6f8fa; cursor: pointer; font-size: 13px; }
+  button:hover { background: #eef1f4; }
+  .counts { color: #656d76; font-size: 12px; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: #656d76; }
+  .legend span::before { content: "●"; margin-right: 4px; }
+  .lg-page::before { color: var(--page); } .lg-child::before { color: var(--child); }
+  .lg-route::before { color: var(--route); } .lg-shell::before { color: var(--shell); }
+  .lg-dual::before { color: var(--dual); } .lg-orphan::before { color: var(--orphan); }
+  main { padding: 16px 20px 60px; }
+  ul.tree, ul.tree ul { list-style: none; margin: 0; padding-left: 20px; }
+  ul.tree { padding-left: 0; }
+  li { position: relative; }
+  .row { display: inline-flex; align-items: baseline; gap: 6px; padding: 2px 4px; border-radius: 5px; }
+  .row:hover { background: #eef1f4; }
+  .tog { display: inline-block; width: 14px; text-align: center; cursor: pointer; color: #656d76; user-select: none; flex: none; }
+  .tog.leaf { visibility: hidden; }
+  .name { font-weight: 600; }
+  .tag { font-size: 11px; color: #656d76; }
+  .badge { font-size: 10px; padding: 1px 5px; border-radius: 8px; border: 1px solid currentColor; }
+  li.collapsed > ul { display: none; }
+  li.hidden { display: none; }
+  mark { background: #fff8c5; padding: 0 1px; }
+  .role-page > .row .name { color: var(--page); }
+  .role-child > .row .name { color: var(--child); }
+  .role-dual > .row .name { color: var(--dual); }
+  .role-orphan > .row .name, .role-orphan-route > .row .name { color: var(--orphan); }
+  .role-shell > .row .name { color: var(--shell); }
+  .role-route > .row .name, .role-page-route > .row .name { color: var(--route); }
+  .ref { color: #999; font-style: italic; }
+  .unused { margin-top: 28px; padding-top: 16px; border-top: 1px solid #d0d7de; }
+  .unused h2 { font-size: 14px; margin: 0 0 4px; }
+  .unused h2 .counts { font-weight: 400; margin-left: 6px; }
+  .unused-tbl { border-collapse: collapse; width: 100%; max-width: 960px; margin-top: 10px; font-size: 13px; }
+  .unused-tbl th, .unused-tbl td { text-align: left; padding: 5px 12px 5px 4px; border-bottom: 1px solid #eaecef; vertical-align: top; }
+  .unused-tbl th { color: #656d76; font-weight: 600; border-bottom: 2px solid #d0d7de; white-space: nowrap; }
+  .unused-tbl code { background: #eef1f4; padding: 1px 5px; border-radius: 4px; }
+  .unused-tbl .sel { color: #656d76; }
+  .unused-tbl .loc { color: #656d76; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+  .src { font-size: 10px; padding: 1px 7px; border-radius: 8px; border: 1px solid currentColor; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .src-libs { color: #8250df; } .src-apps { color: #0969da; } .src-app { color: #656d76; }
+</style>
+</head>
+<body>
+<header>
+  <h1>${appName} <span class="sub">app → route → page → component</span></h1>
+  <div class="bar">
+    <input id="q" type="search" placeholder="Search routes &amp; components… (name, selector, path)">
+    <button id="expand">Expand all</button>
+    <button id="collapse">Collapse all</button>
+    <span class="counts" id="counts"></span>
+  </div>
+  <div class="legend">
+    <span class="lg-route">route path</span>
+    <span class="lg-shell">layout shell</span>
+    <span class="lg-page">page component</span>
+    <span class="lg-child">child component</span>
+    <span class="lg-dual">page-in-page</span>
+    <span class="lg-orphan">orphan</span>
+  </div>
+</header>
+<main>
+  <ul class="tree" id="tree"></ul>
+  <div class="unused" id="unusedBox"></div>
+</main>
+<script>
+const DATA = ${json};
+const tree = document.getElementById('tree');
+
+function roleClass(n) {
+  if (n.type === 'root') return 'role-root';
+  if (n.type === 'route') return n.role === 'orphan-route' ? 'role-orphan-route' : n.role === 'shell' ? 'role-shell' : 'role-route';
+  return 'role-' + n.role;
+}
+function badge(n) {
+  if (n.type === 'route' && n.role === 'orphan-route') return '<span class="badge" style="color:var(--orphan)">orphan route</span>';
+  if (n.type === 'route' && n.role === 'shell') return '<span class="badge" style="color:var(--shell)">shell</span>';
+  if (n.type === 'route' && n.role === 'external') return '<span class="badge" style="color:#999">external</span>';
+  if (n.type === 'comp' && n.role === 'dual') return '<span class="badge" style="color:var(--dual)">★ route+child</span>';
+  if (n.type === 'comp' && n.role === 'orphan') return '<span class="badge" style="color:var(--orphan)">orphan page</span>';
+  if (n.type === 'comp' && n.role === 'page') return '<span class="badge" style="color:var(--page)">page</span>';
+  return '';
+}
+function render(node, parent) {
+  const li = document.createElement('li');
+  li.className = roleClass(node);
+  const hasKids = node.children && node.children.length;
+  const row = document.createElement('div');
+  row.className = 'row';
+  const tog = document.createElement('span');
+  tog.className = 'tog' + (hasKids ? '' : ' leaf');
+  tog.textContent = hasKids ? '▾' : '•';
+  row.appendChild(tog);
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = node.label;
+  row.appendChild(name);
+  // searchable text stored on the li
+  let hay = node.label;
+  if (node.type === 'comp') { hay += ' ' + node.className; if (node.className !== node.label) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = node.className; row.appendChild(t); } }
+  if (node.title) { hay += ' ' + node.title; const t = document.createElement('span'); t.className = 'tag'; t.textContent = '“' + node.title + '”'; row.appendChild(t); }
+  if (node.type === 'route' && node.comp) hay += ' ' + node.comp;
+  const b = badge(node); if (b) { const s = document.createElement('span'); s.innerHTML = b; row.appendChild(s.firstChild); }
+  if (node.ref) { const r = document.createElement('span'); r.className = 'ref'; r.textContent = '↩ ref'; row.appendChild(r); }
+  li.dataset.hay = hay.toLowerCase();
+  li.appendChild(row);
+  if (hasKids) {
+    tog.addEventListener('click', () => li.classList.toggle('collapsed'));
+    const ul = document.createElement('ul');
+    for (const c of node.children) render(c, ul);
+    li.appendChild(ul);
+  }
+  parent.appendChild(li);
+  return li;
+}
+render(DATA.tree, tree);
+
+// unused components — table split by libs / apps source
+if (DATA.unused.length) {
+  const bs = DATA.summary.unusedBySource || {};
+  const counts = Object.keys(bs).sort().map(s => s + ': ' + bs[s]).join(' · ');
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const rows = DATA.unused.map(u => {
+    const hay = (u.className + ' ' + u.selector + ' ' + u.path).toLowerCase();
+    return '<tr data-hay="' + esc(hay) + '">' +
+      '<td><code>' + esc(u.className) + '</code></td>' +
+      '<td class="sel">' + (u.selector ? esc(u.selector) : '—') + '</td>' +
+      '<td><span class="src src-' + u.source + '">' + u.source + '</span></td>' +
+      '<td class="loc">' + esc(u.path) + '</td></tr>';
+  }).join('');
+  document.getElementById('unusedBox').innerHTML =
+    '<h2>Parsed but never referenced by a route page (' + DATA.unused.length + ')' +
+    '<span class="counts tag">' + counts + '</span></h2>' +
+    '<table class="unused-tbl"><thead><tr><th>Component</th><th>Selector</th><th>Source</th><th>Location</th></tr></thead>' +
+    '<tbody id="unusedRows">' + rows + '</tbody></table>';
+}
+
+// counts
+const s = DATA.summary;
+document.getElementById('counts').textContent =
+  s.routes + ' routes · ' + s.pages + ' pages · ' + s.children + ' children' +
+  (s.dual ? ' · ' + s.dual + ' page-in-page' : '') + (s.unused ? ' · ' + s.unused + ' unused' : '') +
+  (DATA.roots.length ? ' · +' + DATA.roots.length + ' extra root(s)' : '');
+
+// search
+const q = document.getElementById('q');
+function clearMarks(li) { const n = li.querySelector(':scope > .row .name'); if (n && n.dataset.orig !== undefined) { n.textContent = n.dataset.orig; delete n.dataset.orig; } }
+function mark(li, term) {
+  const n = li.querySelector(':scope > .row .name');
+  if (!n) return;
+  if (n.dataset.orig === undefined) n.dataset.orig = n.textContent;
+  const txt = n.dataset.orig, i = txt.toLowerCase().indexOf(term);
+  if (i >= 0) n.innerHTML = txt.slice(0, i) + '<mark>' + txt.slice(i, i + term.length) + '</mark>' + txt.slice(i + term.length);
+  else n.textContent = txt;
+}
+function filterTable(term) {
+  document.querySelectorAll('#unusedRows tr').forEach(tr => { tr.style.display = (!term || tr.dataset.hay.includes(term)) ? '' : 'none'; });
+}
+function filter(term) {
+  term = term.trim().toLowerCase();
+  filterTable(term);
+  const all = tree.querySelectorAll('li');
+  if (!term) { all.forEach(li => { li.classList.remove('hidden'); clearMarks(li); }); return; }
+  // a li is visible if it matches or any descendant matches; ancestors of a match are shown + expanded
+  const matches = new Set();
+  all.forEach(li => { if (li.dataset.hay.includes(term)) matches.add(li); });
+  all.forEach(li => {
+    const self = li.dataset.hay.includes(term);
+    const descMatch = self || li.querySelector('li') && [...li.querySelectorAll('li')].some(d => matches.has(d));
+    if (descMatch) { li.classList.remove('hidden', 'collapsed'); } else { li.classList.add('hidden'); }
+    if (self) mark(li, term); else clearMarks(li);
+  });
+}
+q.addEventListener('input', () => filter(q.value));
+
+document.getElementById('expand').addEventListener('click', () => tree.querySelectorAll('li').forEach(li => li.classList.remove('collapsed')));
+document.getElementById('collapse').addEventListener('click', () => tree.querySelectorAll('li').forEach(li => { if (li.querySelector(':scope > ul')) li.classList.add('collapsed'); }));
+</script>
+</body>
+</html>
+`;
+}
+
 const dotSrc = dot();
+if (htmlOut) { writeFileSync(resolve(process.cwd(), htmlOut), htmlDoc()); console.log('HTML written: ' + htmlOut); }
 if (dotOut) { writeFileSync(resolve(process.cwd(), dotOut), dotSrc); console.log('DOT written: ' + dotOut); }
 function render(fmt, out) { try { execFileSync('dot', ['-T' + fmt, '-o', resolve(process.cwd(), out)], { input: dotSrc }); console.log(`${fmt.toUpperCase()} written: ${out}`); } catch (e) { console.error(`Failed to render ${fmt} (is graphviz installed?): ${e.message}`); process.exitCode = 1; } }
 if (svgOut) render('svg', svgOut);
 if (pngOut) render('png', pngOut);
-if (!dotOut && !svgOut && !pngOut) console.log(dotSrc); // default: DOT to stdout
+if (!dotOut && !svgOut && !pngOut && !htmlOut) console.log(dotSrc); // default: DOT to stdout
 
 console.error(`app=${appName}  routes=${routeNodes.length - 1}  page-comps=${routeTargets.size}  child-comps=${compNodes.size - routeTargets.size}  dual-role=${dualRole.size}`);
 if (dualRole.size) console.error('dual-role (route page also embedded as a child): ' + [...dualRole].join(', '));

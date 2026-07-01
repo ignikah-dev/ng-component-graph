@@ -89,6 +89,13 @@ node component-graph.mjs apps/my-app --png graph.png
 # Raw graphviz DOT to a file (style it yourself)
 node component-graph.mjs apps/my-app --dot graph.dot
 
+# Interactive HTML — indented, collapsible tree with a live search box (no graphviz)
+node component-graph.mjs apps/my-app --html graph.html
+
+# Also scan a monorepo's shared libraries for components
+node component-graph.mjs apps/my-app --html graph.html --libs libs/
+node component-graph.mjs apps/my-app --libs libs/ui,libs/shared   # multiple roots
+
 # Highlight orphan routes in red (see below)
 node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 ```
@@ -96,6 +103,40 @@ node component-graph.mjs apps/my-app --svg graph.svg --nav-json orphans.json
 The argument can be the app directory (`apps/my-app`), its `src`, or its `src/app` — the tool
 finds the source root and the app's root `Routes` (`appRoutes`, or the array exported from
 `app.routes.ts`) itself.
+
+### `--html` — searchable indented tree
+
+`--html out.html` writes a **self-contained, dependency-free page** (no graphviz, no network)
+that renders the same `app → route → page → component` hierarchy as an **indented, collapsible
+tree** with a **live search box**. Typing filters nodes by name, selector, path, or class —
+matches are highlighted and their ancestors stay expanded. Roles are colour-coded (page / child
+/ layout shell / page-in-page / orphan). Feed it `--nav-json` too and orphan routes render red,
+just like the graph.
+
+#### The "never referenced" table
+
+Below the tree, every component that was **parsed but never reached from any route page** is
+listed in a table so you can tell dead code from merely-shared code at a glance. Each row is
+classified by where its file lives — `libs`, `apps`, or `app` — with per-source counts in the
+heading, and the rows respond to the same search box:
+
+| Component | Selector | Source | Location |
+|---|---|---|---|
+| `EmptyStateComponent` | `app-empty-state` | 🔵 APPS | `apps/pigletsgo/src/app/components/empty-state/empty-state.component.ts` |
+| `AvatarComponent` | `ui-avatar` | 🟣 LIBS | `libs/ui/src/lib/avatar/avatar.component.ts` |
+
+An `APPS` row is usually a candidate for dead code in *this* app (or a component wired up only
+through a template that doesn't declare it in `imports`), whereas a `LIBS` row is typically a
+shared component that other apps in the monorepo consume but this one doesn't — expected, not a
+bug. The `Location` column points straight at the file so you can decide.
+
+### `--libs` — monorepo shared libraries
+
+Standalone components often live in shared libraries (Nx `libs/`, or any folder outside the app).
+Point `--libs` at one or more roots (comma-separated) and their `*.component.ts` and `*.routes.ts`
+files join the scan, so `@Component({ imports: [...] })` edges resolve into those libraries and
+lazy `loadChildren` targets defined there stop showing as *external/unresolved*. With `--libs`
+omitted, a sibling `libs/` folder is **auto-detected** by walking up from the app directory.
 
 ### Example summary (stderr)
 
