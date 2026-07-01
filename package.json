@@ -1,6 +1,6 @@
 {
   "name": "ng-component-graph",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Draw the full hierarchy of a standalone Angular app — app → route → page component → child component — reconstructed from *.routes.ts and @Component imports[] via the TypeScript AST, rendered with graphviz.",
   "type": "module",
   "bin": {
